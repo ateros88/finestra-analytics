@@ -318,21 +318,21 @@ with tabs[1]:
     }
 
     if has_access(st.session_state["user_tier"], "sector_rotation"):
-        # Skapa snygga tidsintervall-knappar för användaren
+        # Snyggare menyval som matchar stilen mer enhetligt
         tidsintervall = st.radio(
             "Välj tidsperiod:",
             ["1 vecka", "1 månad", "1 år", "3 år", "5 år"],
             horizontal=True,
             index=2,
+            label_visibility="collapsed"
         )
 
-        # Mappa till yfinance-format
         intervall_mapping = {
             "1 vecka": ("5d", "1d"),
             "1 månad": ("1mo", "1d"),
             "1 år": ("1y", "1d"),
-            "3 år": ("3y", "1wk"),
-            "5 år": ("5y", "1wk"),
+            "3 år": ("3y", "1d"),  # Kör 1d även här för stabilare data
+            "5 år": ("5y", "1d"),
         }
 
         period_str, interval_str = intervall_mapping[tidsintervall]
@@ -347,21 +347,22 @@ with tabs[1]:
                         ticker, period=period, interval=interval, progress=False
                     )
                     if not df.empty:
+                        # Hantera yfinance multiindex-kolumner
                         if isinstance(df.columns, pd.MultiIndex):
-                            df = df.xs(ticker, level="Ticker", axis=1)
+                            df = df.droplevel(1, axis=1)
+                        
+                        if "Close" in df.columns:
+                            df = df[["Close"]].reset_index()
+                            df.columns = ["datum", "pris"]
+                            df["ticker"] = ticker
+                            df["sektor_namn"] = f"{namn} ({ticker})"
 
-                        df = df[["Close"]].reset_index()
-                        df.columns = ["datum", "pris"]
-                        df["ticker"] = ticker
-                        df["sektor_namn"] = f"{namn} ({ticker})"
+                            start_pris = df["pris"].iloc[0]
+                            df["förändring"] = (
+                                (df["pris"] - start_pris) / start_pris
+                            ) * 100
 
-                        # Indexera till 0% startpunkt för perioden
-                        start_pris = df["pris"].iloc[0]
-                        df["förändring"] = (
-                            (df["pris"] - start_pris) / start_pris
-                        ) * 100
-
-                        data_list.append(df)
+                            data_list.append(df)
                 except Exception as e:
                     print(f"Kunde inte hämta {ticker}: {e}")
 
@@ -403,7 +404,6 @@ with tabs[1]:
             )
 
             st.write(f"#### Aktuell status ({tidsintervall})")
-            # Hämta senaste datumet per ticker för tabellen
             senaste_per_ticker = (
                 df_sektor.groupby("ticker")["datum"].max().reset_index()
             )
@@ -420,7 +420,7 @@ with tabs[1]:
 
             st.dataframe(df_senaste, hide_index=True)
         else:
-            st.warning("Kunde inte ladda sektordata just nu.")
+            st.warning("Kunde inte ladda sektordata just nu. Försök igen om en stund.")
     else:
         st.error("🔒 Sektorrotation kräver Finestra Advance")
 
