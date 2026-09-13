@@ -331,6 +331,7 @@ with tabs[1]:
             ["1 vecka", "1 månad", "1 år", "3 år", "5 år"],
             default="1 år",
             label_visibility="collapsed"
+            key="sektor_tidsintervall"
         )
         
         # ... (resten av koden för grafen och dataladdningen nedanför)
