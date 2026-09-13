@@ -305,7 +305,7 @@ with tabs[1]:
     st.subheader("Market Research")
     st.write("### Sektorrotation (Historisk Utveckling)")
 
-    # --- Aptitretare / Förklarande text för alla besökare ---
+    # --- Aptitretare / Förklarande text för alla besökare (Insight och uppåt) ---
     st.markdown(
         "Här kan du följa hur olika branscher (sektorer) presterar i förhållande "
         "till varandra över tid. Ett kraftfullt verktyg för att förstå vart kapitalet "
@@ -325,6 +325,7 @@ with tabs[1]:
     
     st.write("") # Lite luft
 
+    # --- Låst verktyg för Advance och Master ---
     if has_access(st.session_state["user_tier"], "sector_rotation"):
         tidsintervall = st.pills(
             "Välj tidsperiod:",
@@ -333,108 +334,261 @@ with tabs[1]:
             label_visibility="collapsed",
             key="sektor_tidsintervall"
         )
-        
-        # ... (resten av koden för grafen och dataladdningen nedanför)
 
-    sektor_namn = {
-        "XLK": "Teknologi",
-        "XLF": "Finans",
-        "XLV": "Hälsovård",
-        "XLY": "Konsument (Sällanköp)",
-        "XLP": "Konsument (Bas)",
-        "XLI": "Industri",
-        "XLE": "Energi",
-        "XLU": "Kraftförsörjning",
-        "XLB": "Material",
-        "XLRE": "Fastigheter",
-    }
+        sektor_namn = {
+            "XLK": "Teknologi",
+            "XLF": "Finans",
+            "XLV": "Hälsovård",
+            "XLY": "Konsument (Sällanköp)",
+            "XLP": "Konsument (Bas)",
+            "XLI": "Industri",
+            "XLE": "Energi",
+            "XLU": "Kraftförsörjning",
+            "XLB": "Material",
+            "XLRE": "Fastigheter",
+        }
 
-    intervall_mapping = {
-        "1 vecka": ("5d", "1d"),
-        "1 månad": ("1mo", "1d"),
-        "1 år": ("1y", "1d"),
-        "3 år": ("3y", "1d"),
-        "5 år": ("5y", "1d"),
-    }
-    
+        intervall_mapping = {
+            "1 vecka": ("5d", "1d"),
+            "1 månad": ("1mo", "1d"),
+            "1 år": ("1y", "1d"),
+            "3 år": ("3y", "1d"),
+            "5 år": ("5y", "1d"),
+        }
+
+        period_str, interval_str = intervall_mapping[tidsintervall]
+
+        # Cache-funktion placerad rent på modulsynlighet / funktionell nivå
+        @st.cache_data(ttl=3600)
+        def hamta_live_sektor_historik(period, interval):
+            tickers = list(sektor_namn.keys())
+            try:
+                df_all = yf.download(
+                    tickers, period=period, interval=interval, progress=False, group_by="ticker"
+                )
+                
+                if df_all.empty:
+                    return pd.DataFrame(), "Tom dataframe från Yahoo Finance"
+
+                data_list = []
+                for ticker in tickers:
+                    try:
+                        if len(tickers) == 1:
+                            df_t = df_all.copy()
+                        else:
+                            df_t = df_all[ticker].copy()
+
+                        df_t = df_t.dropna(subset=["Close"])
+                        if not df_t.empty:
+                            df_t = df_t[["Close"]].reset_index()
+                            df_t.columns = ["datum", "pris"]
+                            df_t["ticker"] = ticker
+                            df_t["sektor_namn"] = f"{sektor_namn[ticker]} ({ticker})"
+
+                            start_pris = df_t["pris"].iloc[0]
+                            df_t["förändring"] = (
+                                (df_t["pris"] - start_pris) / start_pris
+                            ) * 100
+
+                            data_list.append(df_t)
+                    except Exception as sub_e:
+                        print(f"Kunde inte bearbeta {ticker}: {sub_e}")
+
+                if data_list:
+                    return pd.concat(data_list, ignore_index=True), None
+                return pd.DataFrame(), "Inga giltiga datapunkter kunde extraheras"
+                
+            except Exception as e:
+                return pd.DataFrame(), str(e)
+
+        df_sektor, fel_meddelande = hamta_live_sektor_historik(period_str, interval_str)
+
+        if not df_sektor.empty:
+            fig = px.line(
+                df_sektor,
+                x="datum",
+                y="förändring",
+                color="sektor_namn",
+                labels={
+                    "förändring": "Avkastning (%)",
+                    "datum": "Datum",
+                    "sektor_namn": "Sektor",
+                },
+                template="plotly_dark",
+            )
+
+            fig.update_layout(
+                hovermode="x unified",
+                yaxis_ticksuffix=" %",
+                xaxis_title="",
+                yaxis_title="Avkastning (%)",
+                plot_bgcolor="#0A1118",
+                paper_bgcolor="#0A1118",
+                font=dict(color="#FFFFFF"),
+            )
+            fig.update_xaxes(tickformat="%Y-%m-%d")
+
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                f"Grafen visar procentuell utveckling över vald period ({tidsintervall}). Datan är baserad på amerikanska SPDR Sector ETFs."
+            )
+
+            st.write(f"#### Aktuell status ({tidsintervall})")
+            senaste_per_ticker = (
+                df_sektor.groupby("ticker")["datum"].max().reset_index()
+            )
+            df_senaste = pd.merge(senaste_per_ticker, df_sektor, on=["ticker", "datum"])
+            df_senaste = df_senaste[["sektor_namn", "förändring"]].sort_values(
+                by="förändring", ascending=False
+            )
+            df_senaste["förändring"] = (
+                df_senaste["förändring"].round(2).astype(str) + " %"
+            )
+            df_senaste = df_senaste.rename(
+                columns={"sektor_namn": "Sektor", "förändring": "Utveckling"}
+            )
+
+            st.dataframe(df_senaste, hide_index=True)
+        else:
+            st.warning(f"Kunde inte ladda sektordata just nu. Orsak: {fel_meddelande}")
+    else:
+        st.info("🔒 Uppgradera till **Advance** eller **Master** för att låsa upp den interaktiva sektorgrafen och tidsväljaren.")
+
+    st.divider()
+    st.write("### Djupgående analyser")
+    if has_access(st.session_state["user_tier"], "deep_analysis"):
+        st.info("Här visas exklusiv marknadsanalys för medlemmar.")
+    else:
+        st.warning("🔒 Djupanalyser kräver Finestra Advance.")
+
+# --- PRICING ---
+with tabs[2]:
+    st.markdown(
+        "<h2 style='text-align: center;'>Välj din nivå</h2>", unsafe_allow_html=True
+    )
+    st.write("")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("""
+            ### Insight
+            *Håll koll på marknadens topp-aktier.*
+            * **De 4 aktierna med högst Finestra score**
+            * Visar nuvarande pris, genomsnittligt målpris, % uppsida samt antal köprekar
+            * **Månadsbrev:** Nyheter och smakprov på våra analyser direkt i din inkorg.
+            
+            **Pris: 0 kr/mån**
+            """)
+        if st.button("Välj Insight"):
+            st.session_state["user_tier"] = "insight"
+            st.rerun()
+
+    with col2:
+        st.markdown("""
+            ### Advance
+            *För den seriösa aktieinvesteraren.*
+            * **Allt i Insight**
+            * **Full tillgång till alla aktier & sektorer**
+            * **Marknads- och investeringsskola:** Vad påverkar aktierna? Vad är P/E?
+            
+            **Pris: 79 kr/mån**
+            """)
+        if st.button("Välj Advance"):
+            st.session_state["user_tier"] = "advance"
+            st.rerun()
+
+    with col3:
+        st.markdown("""
+            ### Master
+            *För dig som vill ha expertnivå.*
+            * **Allt i Advance**
+            * **Djupanalyser av utvalda aktier (på webben)**
+            * **Avancerade marknadsanalyser:** Guld, silver, olja, krypto & råvaror.
+            * **Exklusiva månadsrapporter:** Djupdykningar & nulägesanalyser.
+            
+            **Pris: 99 kr/mån**
+            """)
+        if st.button("Välj Master"):
+            st.session_state["user_tier"] = "master"
+            st.rerun()
+
 # --- FAQ ---
 with tabs[3]:
-  st.markdown(
-      "<h2 style='text-align: center;'>Vanliga frågor och svar</h2>",
-      unsafe_allow_html=True,
-  )
-  st.write("")
-
-  with st.expander("Vad är Finestra Analytics?"):
-    st.write(
-        "Finestra Analytics är en digital plattform som kombinerar datadrivna"
-        " aktieanalyser, sektorrotation och djupgående marknadsutbildning för"
-        " att hjälpa dig göra bättre investeringsbeslut."
+    st.markdown(
+        "<h2 style='text-align: center;'>Vanliga frågor och svar</h2>",
+        unsafe_allow_html=True,
     )
+    st.write("")
 
-  with st.expander("Vad är Finestra score?"):
-    st.write(
-        "Finestra score är vårt egna sammanvägda betyg som rankar aktier"
-        " baserat på flera olika kvantitativa parametrar. Det hjälper dig att"
-        " snabbt sålla ut vilka bolag som presterar starkast enligt vår modell."
-    )
+    with st.expander("Vad är Finestra Analytics?"):
+        st.write(
+            "Finestra Analytics är en digital plattform som kombinerar datadrivna"
+            " aktieanalyser, sektorrotation och djupgående marknadsutbildning för"
+            " att hjälpa dig göra bättre investeringsbeslut."
+        )
 
-  with st.expander("Fungerar verkligen Finestra Score?"):
-    st.write("""
+    with st.expander("Vad är Finestra score?"):
+        st.write(
+            "Finestra score är vårt egna sammanvägda betyg som rankar aktier"
+            " baserat på flera olika kvantitativa parametrar. Det hjälper dig att"
+            " snabbt sålla ut vilka bolag som presterar starkast enligt vår modell."
+        )
+
+    with st.expander("Fungerar verkligen Finestra Score?"):
+        st.write("""
         Vi använder modellen själva i våra egna investeringar, och vi delar med oss av resultat och utveckling i vårt månadsbrev (som ingår gratis i Insight). 
         
         Historisk avkastning är naturligtvis ingen garanti för framtida resultat, och exakt tidshorisont kan variera. Syftet med Finestra Score och våra analysverktyg är att ge dig ett strukturerat ramverk som ökar dina odds och din sannolikhet att göra lönsamma investeringar över tid.
         """)
 
-  with st.expander(
-      "Vad är skillnaden mellan Insight, Advance och Master?"
-  ):
-    st.write("""
+    with st.expander(
+        "Vad är skillnaden mellan Insight, Advance och Master?"
+    ):
+        st.write("""
         - **Insight (0 kr/mån):** Ger dig de 4 aktierna med högst Finestra score (inkl. nuvarande pris, målpris och uppsida) samt vårt månadsbrev.
         - **Advance (79 kr/mån):** Allt i Insight, plus full tillgång till alla aktier och sektorer samt vår marknads- och investeringsskola där vi förklarar nyckeltal som P/E och vad som driver marknaden.
         - **Master (99 kr/mån):** Allt i Advance, plus våra exklusiva djupanalyser av utvalda aktier, avancerade analyser av råvaror/krypto och våra månatliga fördjupningsrapporter – allt samlat direkt på hemsidan.
         """)
 
-  with st.expander("Hur ofta uppdateras innehållet?"):
-    st.write(
-        "Topplistan och marknadsdata uppdateras löpande. Vårt"
-        " utbildningsmaterial och våra djupanalyser/rapporter uppdateras"
-        " regelbundet för att säkerställa högsta kvalitet."
-    )
+    with st.expander("Hur ofta uppdateras innehållet?"):
+        st.write(
+            "Topplistan och marknadsdata uppdateras löpande. Vårt"
+            " utbildningsmaterial och våra djupanalyser/rapporter uppdateras"
+            " regelbundet för att säkerställa högsta kvalitet."
+        )
 
-  with st.expander("Kan jag säga upp min prenumeration när som helst?"):
-    st.write(
-        "Ja, absolut. Det är ingen bindningstid, du avslutar enkelt din"
-        " prenumeration direkt via ditt konto när du vill."
-    )
+    with st.expander("Kan jag säga upp min prenumeration när som helst?"):
+        st.write(
+            "Ja, absolut. Det är ingen bindningstid, du avslutar enkelt din"
+            " prenumeration direkt via ditt konto när du vill."
+        )
 
-  with st.expander("Ger ni personliga finansiella råd?"):
-    st.write(
-        "Nej. Finestra Analytics tillhandahåller analysverktyg, marknadsdata"
-        " och utbildning. Alla investeringar sker på eget ansvar."
-    )
+    with st.expander("Ger ni personliga finansiella råd?"):
+        st.write(
+            "Nej. Finestra Analytics tillhandahåller analysverktyg, marknadsdata"
+            " och utbildning. Alla investeringar sker på eget ansvar."
+        )
 
 # --- KONTO ---
 with tabs[4]:
-  st.subheader("Konto - Simulator & Information")
+    st.subheader("Konto - Simulator & Information")
 
+    def ändra_nivå():
+        st.session_state["user_tier"] = st.session_state["vald_nivå"]
 
-  def ändra_nivå():
-    st.session_state["user_tier"] = st.session_state["vald_nivå"]
-
-
-  st.selectbox(
-      "Simulera användarnivå (för test):",
-      ["insight", "advance", "master"],
-      key="vald_nivå",
-      on_change=ändra_nivå,
-      index=["insight", "advance", "master"].index(
-          st.session_state.get("user_tier", "insight")
-      ),
-  )
-  st.write(f"Aktiv nivå i simulatorn: **{st.session_state['user_tier']}**")
+    st.selectbox(
+        "Simulera användarnivå (för test):",
+        ["insight", "advance", "master"],
+        key="vald_nivå",
+        on_change=ändra_nivå,
+        index=["insight", "advance", "master"].index(
+            st.session_state.get("user_tier", "insight")
+        ),
+    )
+    st.write(f"Aktiv nivå i simulatorn: **{st.session_state['user_tier']}**")
 
 # --- INSTÄLLNINGAR ---
 with tabs[5]:
-  st.subheader("Inställningar")
-  st.write("Här kan du hantera dina kontoinställningar framöver.")
+    st.subheader("Inställningar")
+    st.write("Här kan du hantera dina kontoinställningar framöver.")
