@@ -349,22 +349,15 @@ with tabs[1]:
         "XLRE": "Fastigheter",
     }
 
-    if has_access(st.session_state["user_tier"], "sector_rotation"):
-        # Piller-knappar för tidsperiod som matchar temat
-        tidsintervall = st.pills(
-            "Välj tidsperiod:",
-            ["1 vecka", "1 månad", "1 år", "3 år", "5 år"],
-            default="1 år",
-            label_visibility="collapsed"
-        )
-
-        intervall_mapping = {
-            "1 vecka": ("5d", "1d"),
-            "1 månad": ("1mo", "1d"),
-            "1 år": ("1y", "1d"),
-            "3 år": ("3y", "1d"),
-            "5 år": ("5y", "1d"),
-        }
+    intervall_mapping = {
+        "1 vecka": ("5d", "1d"),
+        "1 månad": ("1mo", "1d"),
+        "1 år": ("1y", "1d"),
+        "3 år": ("3y", "1d"),
+        "5 år": ("5y", "1d"),
+    }
+    
+    # Här fortsätter koden för att ladda data och rita grafen baserat på tidsintervall...
 
         period_str, interval_str = intervall_mapping[tidsintervall]
 
