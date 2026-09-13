@@ -5,6 +5,7 @@ import plotly.express as px
 from dotenv import load_dotenv
 from supabase import Client, create_client
 import streamlit as st
+import yfinance as yf
 
 # --- 0. Konfiguration & Supabase Anslutning ---
 load_dotenv()
