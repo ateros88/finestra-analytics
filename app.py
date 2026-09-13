@@ -305,6 +305,36 @@ with tabs[1]:
     st.subheader("Market Research")
     st.write("### Sektorrotation (Historisk Utveckling)")
 
+    # --- Aptitretare / Förklarande text för alla besökare ---
+    st.markdown(
+        "Här kan du följa hur olika branscher (sektorer) presterar i förhållande "
+        "till varandra över tid. Ett kraftfullt verktyg för att förstå vart kapitalet "
+        "flödar på marknaden."
+    )
+
+    with st.expander("Vad är sektorrotation och hur använder du det?"):
+        st.markdown("""
+        **Sektorrotation** handlar om hur kapital flyttas mellan olika branscher beroende på var vi befinner oss i konjunkturcykeln. 
+
+        * **Varför ska du titta på detta?** Olika sektorer gynnas i olika marknadslägen. Till exempel brukar *cykliska sektorer* gå starkt i en växande ekonomi, medan *defensiva sektorer* brukar stå emot bättre i tider av osäkerhet.
+        * **Så kan du använda verktyget:**
+          1. **Välj tidsperiod** (från 1 vecka upp till 5 år) för att se både kortsiktiga trender och långsiktiga makrorörelser.
+          2. **Identifiera ledarna:** Vilka branscher drar till sig mest kapital just nu?
+          3. **Anpassa din portfölj:** Använd insikterna för att balansera dina innehav mot de sektorer som visar starkast momentum.
+        """)
+    
+    st.write("") # Lite luft
+
+    if has_access(st.session_state["user_tier"], "sector_rotation"):
+        tidsintervall = st.pills(
+            "Välj tidsperiod:",
+            ["1 vecka", "1 månad", "1 år", "3 år", "5 år"],
+            default="1 år",
+            label_visibility="collapsed"
+        )
+        
+        # ... (resten av koden för grafen och dataladdningen nedanför)
+
     sektor_namn = {
         "XLK": "Teknologi",
         "XLF": "Finans",
