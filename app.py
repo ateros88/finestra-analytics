@@ -18,12 +18,15 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Dölj sidofältet helt med CSS för att få en renare design
+# Dölj sidofältet helt och gör rubriker vita
 st.markdown(
     """
     <style>
         [data-testid="stSidebarNav"] {display: none;}
         section[data-testid="stSidebar"] {width: 0px !important; display: none;}
+        h1, h2, h3 {
+            color: #FFFFFF !important;
+        }
     </style>
 """,
     unsafe_allow_html=True,
