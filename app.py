@@ -318,6 +318,7 @@ with tabs[1]:
     }
 
     if has_access(st.session_state["user_tier"], "sector_rotation"):
+        # Snyggare menyval som matchar stilen mer enhetligt
         tidsintervall = st.radio(
             "Välj tidsperiod:",
             ["1 vecka", "1 månad", "1 år", "3 år", "5 år"],
@@ -330,59 +331,47 @@ with tabs[1]:
             "1 vecka": ("5d", "1d"),
             "1 månad": ("1mo", "1d"),
             "1 år": ("1y", "1d"),
-            "3 år": ("3y", "1d"),
+            "3 år": ("3y", "1d"),  # Kör 1d även här för stabilare data
             "5 år": ("5y", "1d"),
         }
 
         period_str, interval_str = intervall_mapping[tidsintervall]
 
+
         @st.cache_data(ttl=3600)
         def hamta_live_sektor_historik(period, interval):
-            tickers = list(sektor_namn.keys())
-            try:
-                # Hämta alla tickers på en gång för att undvika blockeringar
-                df_all = yf.download(
-                    tickers, period=period, interval=interval, progress=False, group_by="ticker"
-                )
-                
-                if df_all.empty:
-                    return pd.DataFrame(), "Tom dataframe från Yahoo Finance"
+            data_list = []
+            for ticker, namn in sektor_namn.items():
+                try:
+                    df = yf.download(
+                        ticker, period=period, interval=interval, progress=False
+                    )
+                    if not df.empty:
+                        # Hantera yfinance multiindex-kolumner
+                        if isinstance(df.columns, pd.MultiIndex):
+                            df = df.droplevel(1, axis=1)
+                        
+                        if "Close" in df.columns:
+                            df = df[["Close"]].reset_index()
+                            df.columns = ["datum", "pris"]
+                            df["ticker"] = ticker
+                            df["sektor_namn"] = f"{namn} ({ticker})"
 
-                data_list = []
-                for ticker in tickers:
-                    try:
-                        # Extrahera data för specifik ticker
-                        if len(tickers) == 1:
-                            df_t = df_all.copy()
-                        else:
-                            df_t = df_all[ticker].copy()
-
-                        df_t = df_t.dropna(subset=["Close"])
-                        if not df_t.empty:
-                            df_t = df_t[["Close"]].reset_index()
-                            # Hantera om kolumnen heter 'Date' eller 'datum'
-                            date_col = df_t.columns[0]
-                            df_t.columns = ["datum", "pris"]
-                            df_t["ticker"] = ticker
-                            df_t["sektor_namn"] = f"{sektor_namn[ticker]} ({ticker})"
-
-                            start_pris = df_t["pris"].iloc[0]
-                            df_t["förändring"] = (
-                                (df_t["pris"] - start_pris) / start_pris
+                            start_pris = df["pris"].iloc[0]
+                            df["förändring"] = (
+                                (df["pris"] - start_pris) / start_pris
                             ) * 100
 
-                            data_list.append(df_t)
-                    except Exception as sub_e:
-                        print(f"Kunde inte bearbeta {ticker}: {sub_e}")
+                            data_list.append(df)
+                except Exception as e:
+                    print(f"Kunde inte hämta {ticker}: {e}")
 
-                if data_list:
-                    return pd.concat(data_list, ignore_index=True), None
-                return pd.DataFrame(), "Inga giltiga datapunkter kunde extraheras"
-                
-            except Exception as e:
-                return pd.DataFrame(), str(e)
+            if data_list:
+                return pd.concat(data_list, ignore_index=True)
+            return pd.DataFrame()
 
-        df_sektor, fel_meddelande = hamta_live_sektor_historik(period_str, interval_str)
+
+        df_sektor = hamta_live_sektor_historik(period_str, interval_str)
 
         if not df_sektor.empty:
             fig = px.line(
@@ -431,7 +420,7 @@ with tabs[1]:
 
             st.dataframe(df_senaste, hide_index=True)
         else:
-            st.warning(f"Kunde inte ladda sektordata just nu. Orsak: {fel_meddelande}")
+            st.warning("Kunde inte ladda sektordata just nu. Försök igen om en stund.")
     else:
         st.error("🔒 Sektorrotation kräver Finestra Advance")
 
