@@ -301,135 +301,88 @@ with tabs[0]:
 
 # --- MARKET RESEARCH ---
 with tabs[1]:
-    st.subheader("Market Research")
-    st.write("### Sektorrotation (Historisk Utveckling)")
+  st.subheader("Market Research")
+  st.write("### Sektorrotation (Trend)")
 
-    sektor_namn = {
-        "XLK": "Teknologi",
-        "XLF": "Finans",
-        "XLV": "Hälsovård",
-        "XLY": "Konsument (Sällanköp)",
-        "XLP": "Konsument (Bas)",
-        "XLI": "Industri",
-        "XLE": "Energi",
-        "XLU": "Kraftförsörjning",
-        "XLB": "Material",
-        "XLRE": "Fastigheter",
-    }
+  sektor_namn = {
+      "XLK": "Teknologi",
+      "XLF": "Finans",
+      "XLV": "Hälsovård",
+      "XLY": "Konsument (Sällanköp)",
+      "XLP": "Konsument (Bas)",
+      "XLI": "Industri",
+      "XLE": "Energi",
+      "XLU": "Kraftförsörjning",
+      "XLB": "Material",
+      "XLRE": "Fastigheter",
+  }
 
-    if has_access(st.session_state["user_tier"], "sector_rotation"):
-        # Skapa snygga tidsintervall-knappar för användaren
-        tidsintervall = st.radio(
-            "Välj tidsperiod:",
-            ["1 vecka", "1 månad", "1 år", "3 år", "5 år"],
-            horizontal=True,
-            index=2,
+  if has_access(st.session_state["user_tier"], "sector_rotation"):
+    try:
+      sektor_response = supabase.table("sektor_historik").select("*").execute()
+      df_sektor = pd.DataFrame(sektor_response.data)
+
+      if not df_sektor.empty:
+        df_sektor["datum"] = pd.to_datetime(df_sektor["datum"])
+        df_sektor = df_sektor.sort_values(["ticker", "datum"])
+        df_sektor["förändring"] = df_sektor.groupby("ticker")["pris"].transform(
+            lambda x: (x / x.iloc[0] - 1) * 100
+        )
+        df_sektor["sektor_namn"] = df_sektor["ticker"].map(sektor_namn)
+
+        fig = px.line(
+            df_sektor,
+            x="datum",
+            y="förändring",
+            color="sektor_namn",
+            labels={
+                "förändring": "Avkastning (%)",
+                "datum": "Datum",
+                "sektor_namn": "Sektor",
+            },
         )
 
-        # Mappa till yfinance-format
-        intervall_mapping = {
-            "1 vecka": ("5d", "1d"),
-            "1 månad": ("1mo", "1d"),
-            "1 år": ("1y", "1d"),
-            "3 år": ("3y", "1wk"),
-            "5 år": ("5y", "1wk"),
-        }
+        fig.update_layout(
+            hovermode="x unified",
+            yaxis_ticksuffix=" %",
+            xaxis_title="",
+            yaxis_title="Avkastning (%)",
+        )
+        fig.update_xaxes(tickformat="%Y-%m-%d")
 
-        period_str, interval_str = intervall_mapping[tidsintervall]
+        st.plotly_chart(fig, width="stretch")
+        st.caption(
+            "Grafen visar procentuell utveckling sedan första mätningen. Datan"
+            " är baserad på amerikanska SPDR Sector ETFs."
+        )
 
+        st.write("#### Aktuell status (Sedan start)")
+        senaste_datum = df_sektor["datum"].max()
+        df_senaste = df_sektor[df_sektor["datum"] == senaste_datum].copy()
+        df_senaste = df_senaste[["sektor_namn", "förändring"]].sort_values(
+            by="förändring", ascending=False
+        )
+        df_senaste["förändring"] = (
+            df_senaste["förändring"].round(2).astype(str) + " %"
+        )
+        df_senaste = df_senaste.rename(
+            columns={"sektor_namn": "Sektor", "förändring": "Utveckling"}
+        )
 
-        @st.cache_data(ttl=3600)
-        def hamta_live_sektor_historik(period, interval):
-            data_list = []
-            for ticker, namn in sektor_namn.items():
-                try:
-                    df = yf.download(
-                        ticker, period=period, interval=interval, progress=False
-                    )
-                    if not df.empty:
-                        if isinstance(df.columns, pd.MultiIndex):
-                            df = df.xs(ticker, level="Ticker", axis=1)
+        st.dataframe(df_senaste, hide_index=True)
+      else:
+        st.warning("Ingen historisk sektordata hittades än.")
+    except Exception as e:
+      st.error(f"Kunde inte ladda sektordata: {e}")
+  else:
+    st.error("🔒 Sektorrotation kräver Finestra Advance")
 
-                        df = df[["Close"]].reset_index()
-                        df.columns = ["datum", "pris"]
-                        df["ticker"] = ticker
-                        df["sektor_namn"] = f"{namn} ({ticker})"
-
-                        # Indexera till 0% startpunkt för perioden
-                        start_pris = df["pris"].iloc[0]
-                        df["förändring"] = (
-                            (df["pris"] - start_pris) / start_pris
-                        ) * 100
-
-                        data_list.append(df)
-                except Exception as e:
-                    print(f"Kunde inte hämta {ticker}: {e}")
-
-            if data_list:
-                return pd.concat(data_list, ignore_index=True)
-            return pd.DataFrame()
-
-
-        df_sektor = hamta_live_sektor_historik(period_str, interval_str)
-
-        if not df_sektor.empty:
-            fig = px.line(
-                df_sektor,
-                x="datum",
-                y="förändring",
-                color="sektor_namn",
-                labels={
-                    "förändring": "Avkastning (%)",
-                    "datum": "Datum",
-                    "sektor_namn": "Sektor",
-                },
-                template="plotly_dark",
-            )
-
-            fig.update_layout(
-                hovermode="x unified",
-                yaxis_ticksuffix=" %",
-                xaxis_title="",
-                yaxis_title="Avkastning (%)",
-                plot_bgcolor="#0A1118",
-                paper_bgcolor="#0A1118",
-                font=dict(color="#FFFFFF"),
-            )
-            fig.update_xaxes(tickformat="%Y-%m-%d")
-
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                f"Grafen visar procentuell utveckling över vald period ({tidsintervall}). Datan är baserad på amerikanska SPDR Sector ETFs."
-            )
-
-            st.write(f"#### Aktuell status ({tidsintervall})")
-            # Hämta senaste datumet per ticker för tabellen
-            senaste_per_ticker = (
-                df_sektor.groupby("ticker")["datum"].max().reset_index()
-            )
-            df_senaste = pd.merge(senaste_per_ticker, df_sektor, on=["ticker", "datum"])
-            df_senaste = df_senaste[["sektor_namn", "förändring"]].sort_values(
-                by="förändring", ascending=False
-            )
-            df_senaste["förändring"] = (
-                df_senaste["förändring"].round(2).astype(str) + " %"
-            )
-            df_senaste = df_senaste.rename(
-                columns={"sektor_namn": "Sektor", "förändring": "Utveckling"}
-            )
-
-            st.dataframe(df_senaste, hide_index=True)
-        else:
-            st.warning("Kunde inte ladda sektordata just nu.")
-    else:
-        st.error("🔒 Sektorrotation kräver Finestra Advance")
-
-    st.divider()
-    st.write("### Djupgående analyser")
-    if has_access(st.session_state["user_tier"], "deep_analysis"):
-        st.info("Här visas exklusiv marknadsanalys för medlemmar.")
-    else:
-        st.warning("🔒 Djupanalyser kräver Finestra Advance.")
+  st.divider()
+  st.write("### Djupgående analyser")
+  if has_access(st.session_state["user_tier"], "deep_analysis"):
+    st.info("Här visas exklusiv marknadsanalys för medlemmar.")
+  else:
+    st.warning("🔒 Djupanalyser kräver Finestra Advance.")
 
 # --- PRICING ---
 with tabs[2]:
