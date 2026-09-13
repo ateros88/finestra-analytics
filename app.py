@@ -319,11 +319,11 @@ with tabs[1]:
     }
 
     if has_access(st.session_state["user_tier"], "sector_rotation"):
-        tidsintervall = st.radio(
+        # Piller-knappar för tidsperiod som matchar temat
+        tidsintervall = st.pills(
             "Välj tidsperiod:",
             ["1 vecka", "1 månad", "1 år", "3 år", "5 år"],
-            horizontal=True,
-            index=2,
+            default="1 år",
             label_visibility="collapsed"
         )
 
@@ -337,11 +337,11 @@ with tabs[1]:
 
         period_str, interval_str = intervall_mapping[tidsintervall]
 
+        # Cache-funktion placerad rent på modulsynlighet / funktionell nivå
         @st.cache_data(ttl=3600)
         def hamta_live_sektor_historik(period, interval):
             tickers = list(sektor_namn.keys())
             try:
-                # Hämta alla tickers på en gång för att undvika blockeringar
                 df_all = yf.download(
                     tickers, period=period, interval=interval, progress=False, group_by="ticker"
                 )
@@ -352,7 +352,6 @@ with tabs[1]:
                 data_list = []
                 for ticker in tickers:
                     try:
-                        # Extrahera data för specifik ticker
                         if len(tickers) == 1:
                             df_t = df_all.copy()
                         else:
@@ -361,8 +360,6 @@ with tabs[1]:
                         df_t = df_t.dropna(subset=["Close"])
                         if not df_t.empty:
                             df_t = df_t[["Close"]].reset_index()
-                            # Hantera om kolumnen heter 'Date' eller 'datum'
-                            date_col = df_t.columns[0]
                             df_t.columns = ["datum", "pris"]
                             df_t["ticker"] = ticker
                             df_t["sektor_namn"] = f"{sektor_namn[ticker]} ({ticker})"
@@ -442,7 +439,6 @@ with tabs[1]:
         st.info("Här visas exklusiv marknadsanalys för medlemmar.")
     else:
         st.warning("🔒 Djupanalyser kräver Finestra Advance.")
-
 # --- PRICING ---
 with tabs[2]:
   st.markdown(
