@@ -330,7 +330,7 @@ with tabs[1]:
             "Välj tidsperiod:",
             ["1 vecka", "1 månad", "1 år", "3 år", "5 år"],
             default="1 år",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
             key="sektor_tidsintervall"
         )
         
