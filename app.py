@@ -318,7 +318,6 @@ with tabs[1]:
     }
 
     if has_access(st.session_state["user_tier"], "sector_rotation"):
-        # Snyggare menyval som matchar stilen mer enhetligt
         tidsintervall = st.radio(
             "Välj tidsperiod:",
             ["1 vecka", "1 månad", "1 år", "3 år", "5 år"],
@@ -331,12 +330,11 @@ with tabs[1]:
             "1 vecka": ("5d", "1d"),
             "1 månad": ("1mo", "1d"),
             "1 år": ("1y", "1d"),
-            "3 år": ("3y", "1d"),  # Kör 1d även här för stabilare data
+            "3 år": ("3y", "1d"),
             "5 år": ("5y", "1d"),
         }
 
         period_str, interval_str = intervall_mapping[tidsintervall]
-
 
         @st.cache_data(ttl=3600)
         def hamta_live_sektor_historik(period, interval):
@@ -347,7 +345,6 @@ with tabs[1]:
                         ticker, period=period, interval=interval, progress=False
                     )
                     if not df.empty:
-                        # Hantera yfinance multiindex-kolumner
                         if isinstance(df.columns, pd.MultiIndex):
                             df = df.droplevel(1, axis=1)
                         
@@ -369,7 +366,6 @@ with tabs[1]:
             if data_list:
                 return pd.concat(data_list, ignore_index=True)
             return pd.DataFrame()
-
 
         df_sektor = hamta_live_sektor_historik(period_str, interval_str)
 
