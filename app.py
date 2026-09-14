@@ -588,6 +588,28 @@ with tabs[4]:
     )
     st.write(f"Aktiv nivå i simulatorn: **{st.session_state['user_tier']}**")
 
+    st.divider()
+
+    st.subheader("Säkerhet")
+    with st.expander("Glömt eller vill du återställa ditt lösenord?"):
+        st.write("Ange din e-postadress så skickar vi en länk för att återställa ditt lösenord via Supabase.")
+        
+        with st.form("forgot_password_form"):
+            reset_email = st.text_input("E-postadress", key="forgot_email_input")
+            submit_reset = st.form_submit_button("Skicka återställningslänk")
+            
+            if submit_reset:
+                if reset_email:
+                    try:
+                        response = supabase.auth.reset_password_for_email(
+                            reset_email,
+                            options={"redirect_to": "https://din-app-url.streamlit.app"} # Byt ut mot din publika Streamlit-URL vid behov
+                        )
+                        st.success("Om e-postadressen finns registrerad har instruktioner skickats till din inkorg.")
+                    except Exception as e:
+                        st.error(f"Kunde inte skicka återställningslänk: {e}")
+                else:
+                    st.warning("Vänligen ange en giltig e-postadress.")
 # --- INSTÄLLNINGAR ---
 with tabs[5]:
     st.subheader("Inställningar")
