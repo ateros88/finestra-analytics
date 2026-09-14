@@ -35,60 +35,77 @@ st.markdown(
 
 # --- 1. Riktig Inloggningskontroll (Supabase Auth) ---
 if "user" not in st.session_state:
-  st.session_state["user"] = None
+    st.session_state["user"] = None
 
 # Kolla om det finns en aktiv session
 session = supabase.auth.get_session()
 if session:
-  st.session_state["user"] = session.user
+    st.session_state["user"] = session.user
 
 # Om användaren INTE är inloggad: Visa inloggning/registrering för betatestare
 if not st.session_state["user"]:
-  st.markdown(
-      "<h1 style='text-align: center;'>Finestra Analytics</h1>",
-      unsafe_allow_html=True,
-  )
-  st.markdown(
-      "<h3 style='text-align: center; color: gray;'>Betatest</h3>",
-      unsafe_allow_html=True,
-  )
-  st.write("")
+    st.markdown(
+        "<h1 style='text-align: center;'>Finestra Analytics</h1>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<h3 style='text-align: center; color: gray;'>Betatest</h3>",
+        unsafe_allow_html=True,
+    )
+    st.write("")
 
-  col1, col2, col3 = st.columns([1, 2, 1])
-  with col2:
-    tab_login, tab_signup = st.tabs(["Logga in", "Skapa betakonto"])
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        tab_login, tab_signup = st.tabs(["Logga in", "Skapa betakonto"])
 
-    with tab_login:
-      email = st.text_input("E-post", key="login_email")
-      password = st.text_input("Lösenord", type="password", key="login_password")
+        with tab_login:
+            email = st.text_input("E-post", key="login_email")
+            password = st.text_input("Lösenord", type="password", key="login_password")
 
-      if st.button("Logga in", width="stretch"):
-        try:
-          res = supabase.auth.sign_in_with_password(
-              {"email": email, "password": password}
-          )
-          st.session_state["user"] = res.user
-          st.success("Inloggad!")
-          st.rerun()
-        except Exception as e:
-          st.error(f"Inloggning misslyckades: {e}")
+            if st.button("Logga in", width="stretch"):
+                try:
+                    res = supabase.auth.sign_in_with_password(
+                        {"email": email, "password": password}
+                    )
+                    st.session_state["user"] = res.user
+                    st.success("Inloggad!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Inloggning misslyckades: {e}")
 
-    with tab_signup:
-      st.write("Skapa ett konto för att delta i betatestet.")
-      new_email = st.text_input("E-post", key="signup_email")
-      new_password = st.text_input(
-          "Välj lösenord", type="password", key="signup_password"
-      )
+            # --- Glömt lösenord direkt på inloggningssidan ---
+            st.write("")
+            with st.expander("Glömt lösenord?"):
+                reset_email_input = st.text_input("E-post för återställning", key="login_reset_email")
+                if st.button("Skicka återställningslänk", key="btn_send_reset"):
+                    if reset_email_input:
+                        try:
+                            supabase.auth.reset_password_for_email(
+                                reset_email_input,
+                                options={"redirect_to": "https://finestra-analytics.streamlit.app"}
+                            )
+                            st.success("Om e-postadressen finns registrerad har instruktioner skickats till din inkorg.")
+                        except Exception as e:
+                            st.error(f"Kunde inte skicka länk: {e}")
+                    else:
+                        st.warning("Vänligen ange din e-postadress.")
 
-      if st.button("Registrera konto", width="stretch"):
-        try:
-          supabase.auth.sign_up({"email": new_email, "password": new_password})
-          st.success("Konto skapat! Du kan nu logga in.")
-        except Exception as e:
-          st.error(f"Kunde inte registrera: {e}")
+        with tab_signup:
+            st.write("Skapa ett konto för att delta i betatestet.")
+            new_email = st.text_input("E-post", key="signup_email")
+            new_password = st.text_input(
+                "Välj lösenord", type="password", key="signup_password"
+            )
 
-  # Stoppar resten av appen från att visas för oinloggade
-  st.stop()
+            if st.button("Registrera konto", width="stretch"):
+                try:
+                    supabase.auth.sign_up({"email": new_email, "password": new_password})
+                    st.success("Konto skapat! Du kan nu logga in.")
+                except Exception as e:
+                    st.error(f"Kunde inte registrera: {e}")
+
+    # Stoppar resten av appen från att visas för oinloggade
+    st.stop()
 
 # --- 2. Initiera session_state för nivåer (när man är inloggad) ---
 if "user_tier" not in st.session_state:
@@ -592,7 +609,7 @@ with tabs[4]:
 
     st.subheader("Säkerhet")
     with st.expander("Glömt eller vill du återställa ditt lösenord?"):
-        st.write("Ange din e-postadress så skickar vi en länk för att återställa ditt lösenord via Supabase.")
+        st.write("Ange din e-postadress så skickar vi en länk för att återställa ditt lösenord.")
         
         with st.form("forgot_password_form"):
             reset_email = st.text_input("E-postadress", key="forgot_email_input")
