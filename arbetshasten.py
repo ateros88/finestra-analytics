@@ -137,7 +137,7 @@ def hamta_alla_tickers():
 
     return sorted(list(tickers))
 
-def kör_global_pipeline():
+def kor_global_pipeline():
     print("=== Startar Finestra Analytics Global Pipeline ===")
     start_tid = time.time()
 
@@ -237,6 +237,11 @@ def kör_global_pipeline():
             except Exception:
                 pass
 
+            # 4. Filter: Krav på minst 5 köprekommendationer
+            if antal_koprek < 5:
+                print(f"[{i}/{len(raw_tickers)}] Hoppar över {eod_symbol}: Har endast {antal_koprek} köprek (krav: minst 5).")
+                continue
+
             # Omvandling från pence till pund för UK
             if eod_symbol.endswith(".L") or valuta in ["GBp", "GBX"]:
                 nuvarande_pris = nuvarande_pris / 100.0
@@ -257,7 +262,7 @@ def kör_global_pipeline():
                 "senast_uppdaterad": nu_tid,
             })
 
-            print(f"[{i}/{len(raw_tickers)}] {eod_symbol} ({namn}) | Pris: {nuvarande_pris:.2f} {valuta} | Target: {target:.2f} | Potential: {potential}% | Köprek: {antal_koprek}")
+            print(f"[{i}/{len(raw_tickers)}] OK: {eod_symbol} ({namn}) | Pris: {nuvarande_pris:.2f} {valuta} | Target: {target:.2f} | Potential: {potential}% | Köprek: {antal_koprek}")
 
             if len(batch_buffer) >= BATCH_SIZE:
                 supabase.table("analyser_eod").upsert(batch_buffer, on_conflict="ticker").execute()
@@ -283,4 +288,4 @@ def kör_global_pipeline():
     print(f"==========================================")
 
 if __name__ == "__main__":
-    kör_global_pipeline()
+    kor_global_pipeline()
