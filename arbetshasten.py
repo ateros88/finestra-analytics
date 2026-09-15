@@ -19,7 +19,7 @@ def hamta_valuta_fran_suffix(symbol):
     if symbol.endswith(".OL"): return "NOK"
     if symbol.endswith(".CO"): return "DKK"
     if symbol.endswith(".HE") or symbol.endswith(".DE"): return "EUR"
-    if symbol.endswith(".L"): return "GBp"
+    if symbol.endswith(".L"): return "GBP"
     return "USD"
 
 def hamta_alla_tickers():
@@ -78,10 +78,8 @@ def hamta_alla_tickers():
             tables = pd.read_html(io.StringIO(res.text))
             se_count = 0
             for df in tables:
-                # Söker bredare efter alla tänkbara kolumnnamn för kortnamn/ticker på svenska Wikipedia
                 col = next((c for c in df.columns if any(k in str(c).lower() for k in ["kortnamn", "ticker", "symbol", "bolag"])), None)
                 if col and len(df) > 5:
-                    # Om kolumnen innehöll bolagsnamn istället för ticker, hoppa över till nästa
                     sample_val = str(df[col].iloc[0])
                     if len(sample_val) < 15 and not " " in sample_val.strip():
                         se_list = df[col].astype(str).str.strip().apply(lambda x: f"{x}.ST" if not x.endswith(".ST") else x)
@@ -215,7 +213,7 @@ def kör_global_pipeline():
                     buy = int(analyst_ratings.get("Buy", 0) or 0)
                     antal_koprek = strong_buy + buy
 
-            # 3. Fallback till Yahoo Info om EODHD saknar data / köprekommendationer (viktigt för EU-aktier!)
+            # 3. Fallback till Yahoo Info om EODHD saknar data / köprekommendationer
             try:
                 yf_info = ticker_yf.info
                 if target == 0.0:
@@ -224,7 +222,6 @@ def kör_global_pipeline():
                     namn = yf_info.get("shortName", yahoo_symbol)
                     sektor = yf_info.get("sector", sektor)
                 
-                # Om EODHD inte gav några köprekommendationer (vanligt på EU-aktier), hämta från Yahoo
                 if antal_koprek == 0:
                     num_analysts = int(yf_info.get("numberOfAnalystOpinions", 0) or 0)
                     rec_key = str(yf_info.get("recommendationKey", "")).lower()
@@ -232,6 +229,12 @@ def kör_global_pipeline():
                         antal_koprek = num_analysts if num_analysts > 0 else 1
             except Exception:
                 pass
+
+            # OMVANDLING: Omräkning från pence (GBp / GBX) till pund (GBP / £) för brittiska aktier (.L)
+            if eod_symbol.endswith(".L") or valuta in ["GBp", "GBX"]:
+                nuvarande_pris = nuvarande_pris / 100.0
+                target = target / 100.0
+                valuta = "GBP"
 
             potential = round(((target - nuvarande_pris) / nuvarande_pris) * 100, 2) if (target > 0 and nuvarande_pris > 0) else 0.0
 
