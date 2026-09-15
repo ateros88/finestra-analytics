@@ -262,14 +262,21 @@ with tabs[0]:
 
         df["sektor_sv"] = df["sektor"].map(sektor_namn_sv).fillna(df["sektor"])
 
-        # Extrahera land/börs från ticker-suffix
+# Extrahera land/börs från ticker-suffix och valuta
         def extrahera_land(row):
-            ticker = str(row.get("ticker", ""))
+            ticker = str(row.get("ticker", "")).upper()
             valuta = str(row.get("valuta", "")).upper()
-            if ticker.endswith(".SE") or valuta == "SEK":
+
+            if ticker.endswith(".ST") or ticker.endswith(".SE") or valuta == "SEK":
                 return "Sverige"
-            elif ticker.endswith(".DE"):
+            elif ticker.endswith(".OL") or valuta == "NOK":
+                return "Norge"
+            elif ticker.endswith(".CO") or valuta == "DKK":
+                return "Danmark"
+            elif ticker.endswith(".DE") or ticker.endswith(".F") or valuta == "EUR":
                 return "Tyskland"
+            elif ticker.endswith(".L") or valuta in ["GBP", "GBX"]:
+                return "Storbritannien"
             elif ticker.endswith(".US") or valuta == "USD":
                 return "USA"
             else:
@@ -346,8 +353,6 @@ with tabs[0]:
             hide_index=True,
             height=600
         )
-    else:
-        st.info("Ingen data tillgänglig i Supabase ännu. Kör `arbetshasten.py` för att fylla tabellen.")
 
 # --- MARKET RESEARCH ---
 with tabs[1]:
