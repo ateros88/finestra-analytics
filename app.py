@@ -516,6 +516,16 @@ with tabs[2]:
             st.rerun()
 
     with col3:
+        # Visuell badge för att dra blicken till Master
+        st.markdown(
+            """
+            <div style="background-color: #ff4b4b; color: white; padding: 4px 8px; border-radius: 4px; text-align: center; font-weight: bold; font-size: 13px; margin-bottom: 8px;">
+                ⭐ MEST POPULÄR / BÄST VÄRDE
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        
         st.markdown("""
             ### Master
             *För dig som vill ha expertnivå.*
@@ -526,6 +536,10 @@ with tabs[2]:
             
             **Pris: 99 kr/mån**
             """)
+        
+        # Lyft fram mervärdet med 20 kr-skillnaden
+        st.caption("✨ Endast +20 kr/mån jämfört med Advance – få tillgång till råvaror & krypto direkt.")
+
         if st.button("Välj Master"):
             st.session_state["user_tier"] = "master"
             st.rerun()
