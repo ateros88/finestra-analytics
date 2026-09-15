@@ -62,7 +62,7 @@ if not st.session_state["user"]:
             email = st.text_input("E-post", key="login_email")
             password = st.text_input("Lösenord", type="password", key="login_password")
 
-            if st.button("Logga in", width="stretch"):
+            if st.button("Logga in", use_container_width=True):
                 try:
                     res = supabase.auth.sign_in_with_password(
                         {"email": email, "password": password}
@@ -97,7 +97,7 @@ if not st.session_state["user"]:
                 "Välj lösenord", type="password", key="signup_password"
             )
 
-            if st.button("Registrera konto", width="stretch"):
+            if st.button("Registrera konto", use_container_width=True):
                 try:
                     supabase.auth.sign_up({"email": new_email, "password": new_password})
                     st.success("Konto skapat! Du kan nu logga in.")
@@ -139,7 +139,8 @@ def has_access(user_tier, feature):
 @st.cache_data(ttl=600)
 def hämta_data():
   try:
-    response = supabase.table("analyser").select("*").execute()
+    # Hämtar nu från din nya EOD-tabell i Supabase
+    response = supabase.table("analyser_eod").select("*").execute()
     return pd.DataFrame(response.data)
   except:
     return pd.DataFrame()
@@ -173,7 +174,6 @@ def formatera_pris(pris_varde, valuta_kod):
   sym = valuta_symboler.get(str(valuta_kod).upper(), "$")
   pris_str = f"{float(pris_varde):.2f}"
   
-  # Placera symbolen snyggt beroende på valuta
   if sym in ["$", "€", "£"]:
     return f"{sym}{pris_str}"
   else:
@@ -251,23 +251,37 @@ with tabs[0]:
         df["antal_koprek"], errors="coerce"
     ).fillna(0)
 
-    # Om valuta-kolumn saknas i tabellen tillfälligt, sätt USD som standard
     if "valuta" not in df.columns:
       df["valuta"] = "USD"
 
-    max_pot = df["potential"].max()
-    norm_pot = (
-        df["potential"] / (max_pot if max_pot > 0 else 1)
-    ) * 60
-    max_rek = df["antal_koprek"].max()
-    norm_rek = (
-        df["antal_koprek"] / (max_rek if max_rek > 0 else 1)
-    ) * 40
-    df["Finestra Score"] = (norm_pot + norm_rek).round(0)
+    # Använd Finestra Score direkt om den beräknas i skriptet, annars fallback
+    if "finestra_score" in df.columns:
+        df["Finestra Score"] = pd.to_numeric(df["finestra_score"], errors="coerce").fillna(50)
+    else:
+        max_pot = df["potential"].max()
+        norm_pot = (df["potential"] / (max_pot if max_pot > 0 else 1)) * 60
+        max_rek = df["antal_koprek"].max()
+        norm_rek = (df["antal_koprek"] / (max_rek if max_rek > 0 else 1)) * 40
+        df["Finestra Score"] = (norm_pot + norm_rek).round(0)
 
     df["sektor_sv"] = df["sektor"].map(sektor_namn_sv).fillna(df["sektor"])
 
-    # Applicera dynamisk valutaformatering
+    # Extrahera land/börs från ticker-suffix (t.ex. .SE -> Sverige, .DE -> Tyskland, annars Övriga)
+    def extrahera_land(ticker):
+        if not isinstance(ticker, str):
+            return "Övriga"
+        if ticker.endswith(".SE"):
+            return "Sverige"
+        elif ticker.endswith(".DE"):
+            return "Tyskland"
+        elif ticker.endswith(".US"):
+            return "USA"
+        else:
+            return "Övriga"
+
+    df["Land"] = df["ticker"].apply(extrahera_land)
+
+    # Formatera priser
     df["Kurs"] = [formatera_pris(row["nuvarande"], row["valuta"]) for _, row in df.iterrows()]
     df["Riktkurs"] = [formatera_pris(row["target"], row["valuta"]) for _, row in df.iterrows()]
     df["Potential (%)"] = df["potential"].round(1).astype(str) + " %"
@@ -282,26 +296,26 @@ with tabs[0]:
     )
 
     if has_access(st.session_state["user_tier"], "sector_selection"):
-      unika_sektorer = sorted(
-          [s for s in df["sektor_sv"].unique() if s and s != "N/A"]
-      )
-      sektorer = ["Visa Alla (Topp 4)"] + unika_sektorer
-      vald_sektor = st.selectbox("Välj sektor:", sektorer)
+        # Filter-kolumner sida vid sida
+        col_f1, col_f2 = st.columns(2)
+        
+        with col_f1:
+            unika_lander = sorted(display_df["Land"].unique().tolist())
+            valda_lander = st.multiselect("Filtrera på marknad/land:", unika_lander, default=unika_lander)
+            
+        with col_f2:
+            unika_sektorer = sorted([s for s in display_df["Sektor"].unique() if s and s != "N/A"])
+            valda_sektorer = st.multiselect("Filtrera på sektor:", unika_sektorer, default=unika_sektorer)
 
-      if vald_sektor == "Visa Alla (Topp 4)":
-        visnings_df = (
-            display_df.sort_values(by="Finestra Score", ascending=False)
-            .head(4)
-        )
-      else:
+        # Applicera filter
         visnings_df = display_df[
-            display_df["Sektor"] == vald_sektor
+            display_df["Land"].isin(valda_lander) & 
+            display_df["Sektor"].isin(valda_sektorer)
         ].sort_values(by="Finestra Score", ascending=False)
+        
     else:
-      st.info("Visar Topp 4 (Insight). Uppgradera till Advance för sektorval!")
-      visnings_df = (
-          display_df.sort_values(by="Finestra Score", ascending=False).head(4)
-      )
+        st.info("Visar Topp 4 (Insight). Uppgradera till Advance för full tillgång till alla marknader och sektorer!")
+        visnings_df = display_df.sort_values(by="Finestra Score", ascending=False).head(4)
 
     st.dataframe(
         visnings_df[[
@@ -312,8 +326,10 @@ with tabs[0]:
             "Riktkurs",
             "Potential (%)",
             "Köprekar",
+            "Sektor",
+            "Land"
         ]],
-        width=1000,
+        use_container_width=True,
         hide_index=True,
     )
 
@@ -322,7 +338,6 @@ with tabs[1]:
     st.subheader("Market Research")
     st.write("### Sektorrotation (Historisk Utveckling)")
 
-    # --- Aptitretare / Förklarande text för alla besökare (Insight och uppåt) ---
     st.markdown(
         "Här kan du följa hur olika branscher (sektorer) presterar i förhållande "
         "till varandra över tid. Ett kraftfullt verktyg för att förstå vart kapitalet "
@@ -340,9 +355,8 @@ with tabs[1]:
           3. **Anpassa din portfölj:** Använd insikterna för att balansera dina innehav mot de sektorer som visar starkast momentum.
         """)
     
-    st.write("") # Lite luft
+    st.write("")
 
-    # --- Låst verktyg för Advance och Master ---
     if has_access(st.session_state["user_tier"], "sector_rotation"):
         tidsintervall = st.pills(
             "Välj tidsperiod:",
@@ -375,7 +389,6 @@ with tabs[1]:
 
         period_str, interval_str = intervall_mapping[tidsintervall]
 
-        # Cache-funktion placerad rent på modulsynlighet / funktionell nivå
         @st.cache_data(ttl=3600)
         def hamta_live_sektor_historik(period, interval):
             tickers = list(sektor_namn.keys())
@@ -488,9 +501,7 @@ with tabs[2]:
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        # Osynlig "utfyllnad" för att matcha badgen på Master-kolumnen
         st.markdown("<div style='height: 29px; margin-bottom: 8px;'></div>", unsafe_allow_html=True)
-        
         st.markdown("""
             ### Insight
             *Håll koll på marknadens topp-aktier.*
@@ -505,9 +516,7 @@ with tabs[2]:
             st.rerun()
 
     with col2:
-        # Osynlig "utfyllnad" här med
         st.markdown("<div style='height: 29px; margin-bottom: 8px;'></div>", unsafe_allow_html=True)
-        
         st.markdown("""
             ### Advance
             *För den seriösa aktieinvesteraren.*
@@ -522,7 +531,6 @@ with tabs[2]:
             st.rerun()
 
     with col3:
-        # Visuell badge för att dra blicken till Master
         st.markdown(
             """
             <div style="background-color: #ff4b4b; color: white; padding: 4px 8px; border-radius: 4px; text-align: center; font-weight: bold; font-size: 13px; margin-bottom: 8px;">
@@ -531,7 +539,6 @@ with tabs[2]:
             """,
             unsafe_allow_html=True
         )
-        
         st.markdown("""
             ### Master
             *För dig som vill ha expertnivå.*
@@ -542,7 +549,6 @@ with tabs[2]:
             
             **Pris: 99 kr/mån**
             """)
-        
         st.caption("✨ Endast +20 kr/mån jämfört med Advance – få tillgång till råvaror & krypto direkt.")
 
         if st.button("Välj Master"):
@@ -578,9 +584,7 @@ with tabs[3]:
         Historisk avkastning är naturligtvis ingen garanti för framtida resultat, och exakt tidshorisont kan variera. Syftet med Finestra Score och våra analysverktyg är att ge dig ett strukturerat ramverk som ökar dina odds och din sannolikhet att göra lönsamma investeringar över tid.
         """)
 
-    with st.expander(
-        "Vad är skillnaden mellan Insight, Advance och Master?"
-    ):
+    with st.expander("Vad är skillnaden mellan Insight, Advance och Master?"):
         st.write("""
         - **Insight (0 kr/mån):** Ger dig de 4 aktierna med högst Finestra score (inkl. nuvarande pris, målpris och uppsida) samt vårt månadsbrev.
         - **Advance (79 kr/mån):** Allt i Insight, plus full tillgång till alla aktier och sektorer samt vår marknads- och investeringsskola där vi förklarar nyckeltal som P/E och vad som driver marknaden.
@@ -639,13 +643,14 @@ with tabs[4]:
                     try:
                         response = supabase.auth.reset_password_for_email(
                             reset_email,
-                            options={"redirect_to": "https://din-app-url.streamlit.app"} # Byt ut mot din publika Streamlit-URL vid behov
+                            options={"redirect_to": "https://finestra-analytics.streamlit.app"}
                         )
                         st.success("Om e-postadressen finns registrerad har instruktioner skickats till din inkorg.")
                     except Exception as e:
                         st.error(f"Kunde inte skicka återställningslänk: {e}")
                 else:
                     st.warning("Vänligen ange en giltig e-postadress.")
+
 # --- INSTÄLLNINGAR ---
 with tabs[5]:
     st.subheader("Inställningar")
