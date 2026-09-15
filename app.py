@@ -253,11 +253,12 @@ with tabs[0]:
         if "valuta" not in df.columns:
             df["valuta"] = "USD"
 
-        # --- DYNAMISK FINESTRA SCORE (1–100) ---
-        # 60% vikt på riktkurs-potential (maxad vid 50%), 40% vikt på analitiker-köprekar (maxad vid 30)
-        pot_score = df["potential"].clip(lower=0, upper=50) * (60.0 / 50.0)
-        kop_score = df["antal_koprek"].clip(lower=0, upper=30) * (40.0 / 30.0)
-        df["Finestra Score"] = (pot_score + kop_score).round().astype(int).clip(lower=1, upper=100)
+# --- DYNAMISK FINESTRA SCORE (Percentilbaserad relativ rankning) ---
+        pot_rank = df["potential"].rank(pct=True) * 60
+        kop_rank = df["antal_koprek"].rank(pct=True) * 40
+        total_raw = pot_rank + kop_rank
+        max_raw = total_raw.max() if total_raw.max() > 0 else 1
+        df["Finestra Score"] = ((total_raw / max_raw) * 98).round().astype(int).clip(lower=1, upper=99)
 
         df["sektor_sv"] = df["sektor"].map(sektor_namn_sv).fillna(df["sektor"])
 
