@@ -10,7 +10,7 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 
 def kör_us500_test():
-    print("--- Hämtar riktiga kurser direkt från EODHD Fundamentals ---")
+    print("--- Startar test med EOD stängningskurs och Fundamentals ---")
 
     if not EODHD_API_KEY:
         print("FEL: EODHD_API_KEY saknas i miljövariabler.")
@@ -24,52 +24,53 @@ def kör_us500_test():
         print(f"\nUndersöker ticker: {ticker}")
 
         try:
-            # Hämta fundamenta för tickern
+            # 1. Hämta senaste stängningskurs (EOD) - ingår i din prenumeration
+            url_eod = f"https://eodhd.com/api/eod/{ticker}?api_token={EODHD_API_KEY}&fmt=json&limit=1"
+            res_eod = requests.get(url_eod)
+            
+            print(f"  - EOD Statuskod: {res_eod.status_code}")
+            
+            nuvarande_pris = 0.0
+            if res_eod.status_code == 200:
+                eod_data = res_eod.json()
+                # EOD returnerar en lista med objekt, vi vill åt den senaste ('close')
+                if isinstance(eod_data, list) and len(eod_data) > 0:
+                    nuvarande_pris = float(eod_data[-1].get("close", 0) or 0)
+
+            print(f"  - Senaste stängningskurs (EOD): {nuvarande_pris}")
+
+            if nuvarande_pris <= 0:
+                print("  -> Hoppar över: Kunde inte hämta giltig stängningskurs")
+                continue
+
+            # 2. Hämta fundamenta för namn, sektor och analytikerbetyg
             url_fund = f"https://eodhd.com/api/fundamentals/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
             res_fund = requests.get(url_fund)
             
-            if res_fund.status_code != 200:
-                print(f"  -> Kunde inte hämta (Status: {res_fund.status_code})")
-                continue
+            namn = ticker
+            sektor = "Okänd"
+            valuta = "USD"
+            target = 0.0
+            antal_koprek = 0
 
-            fund_data = res_fund.json()
-            if not fund_data or "General" not in fund_data:
-                continue
+            if res_fund.status_code == 200:
+                fund_data = res_fund.json()
+                if fund_data and "General" in fund_data:
+                    general = fund_data.get("General", {})
+                    analyst_ratings = fund_data.get("AnalystRatings", {})
 
-            general = fund_data.get("General", {})
-            highlights = fund_data.get("Highlights", {})
-            technical = fund_data.get("Technical", {})
-            analyst_ratings = fund_data.get("AnalystRatings", {})
-
-            # Hämta aktiekurs direkt från Highlights eller Technicals
-            # EODHD lagrar ofta senaste slutpris i Highlights under 'SharePrice' eller liknande, 
-            # alternativt kan vi läsa 50DayMA / nuvarande pris direkt från Technical om det finns.
-            # Låt oss kolla om 'SharePrice' eller motsvarande finns i Highlights:
-            nuvarande_pris = float(
-                highlights.get("SharePrice", 0) or 
-                technical.get("CurrentPrice", 0) or 
-                highlights.get("MarketCapitalization", 0) and 0 or 
-                0
-            )
-
-            # Om nyckeln heter något annat i just denna struktur, kika på Valuation eller Technical
-            if nuvarande_pris <= 0:
-                # Fallback: EODHD har ibland priset under Valuation eller som Close i tekniska data
-                nuvarande_pris = float(technical.get("Price", 0) or 0)
-
-            # Om vi vill ha exakt rätt slutpris via fundamentals filter kan vi även anropa med ?filter=Highlights::SharePrice
-            target = float(analyst_ratings.get("TargetPrice", 0) or 0)
-            strong_buy = int(analyst_ratings.get("StrongBuy", 0) or 0)
-            buy = int(analyst_ratings.get("Buy", 0) or 0)
-            antal_koprek = strong_buy + buy
-
-            namn = general.get("Name", ticker)
-            sektor = general.get("Sector", "Okänd")
-            valuta = general.get("Currency", "USD")
+                    namn = general.get("Name", ticker)
+                    sektor = general.get("Sector", "Okänd")
+                    valuta = general.get("Currency", "USD")
+                    target = float(analyst_ratings.get("TargetPrice", 0) or 0)
+                    
+                    strong_buy = int(analyst_ratings.get("StrongBuy", 0) or 0)
+                    buy = int(analyst_ratings.get("Buy", 0) or 0)
+                    antal_koprek = strong_buy + buy
 
             potential = round(((target - nuvarande_pris) / nuvarande_pris) * 100, 2) if (target > 0 and nuvarande_pris > 0) else 0.0
 
-            print(f"  -> {ticker} ({namn}) | Pris: {nuvarande_pris} | Target: {target} | Potential: {potential}%")
+            print(f"  -> Sparar till Supabase: {ticker} ({namn}) | Pris: {nuvarande_pris} | Target: {target} | Potential: {potential}%")
             
             supabase.table("analyser_eod").upsert({
                 "ticker": ticker,
@@ -84,12 +85,12 @@ def kör_us500_test():
             }, on_conflict="ticker").execute()
 
             sparade += 1
-            time.sleep(0.1)
+            time.sleep(0.2)
 
         except Exception as sub_e:
-            print(f"  -> FEL: {sub_e}")
+            print(f"  -> FEL vid bearbetning av {ticker}: {sub_e}")
 
-    print(f"\n--- Klart! Sparade rader: {sparade} ---")
+    print(f"\n--- Test klart! Sparade rader: {sparade} ---")
 
 if __name__ == "__main__":
     kör_us500_test()
