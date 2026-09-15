@@ -109,7 +109,7 @@ if not st.session_state["user"]:
 
 # --- 2. Initiera session_state för nivåer (när man är inloggad) ---
 if "user_tier" not in st.session_state:
-  st.session_state["user_tier"] = "insight"
+    st.session_state["user_tier"] = "insight"
 
 # Definiera rättigheter
 TIER_FEATURES = {
@@ -133,17 +133,16 @@ TIER_FEATURES = {
 
 
 def has_access(user_tier, feature):
-  return feature in TIER_FEATURES.get(user_tier, ["top4_dashboard"])
+    return feature in TIER_FEATURES.get(user_tier, ["top4_dashboard"])
 
 
 @st.cache_data(ttl=600)
 def hämta_data():
-  try:
-    # Hämtar nu från din nya EOD-tabell i Supabase
-    response = supabase.table("analyser_eod").select("*").execute()
-    return pd.DataFrame(response.data)
-  except:
-    return pd.DataFrame()
+    try:
+        response = supabase.table("analyser_eod").select("*").execute()
+        return pd.DataFrame(response.data)
+    except Exception:
+        return pd.DataFrame()
 
 
 # Mappning för svenska sektornamn
@@ -163,48 +162,48 @@ sektor_namn_sv = {
 
 # --- Hjälpfunktion för dynamisk valutaformatering ---
 def formatera_pris(pris_varde, valuta_kod):
-  valuta_symboler = {
-      "USD": "$",
-      "SEK": " kr",
-      "NOK": " kr",
-      "DKK": " DKK",
-      "EUR": "€",
-      "GBP": "£",
-  }
-  sym = valuta_symboler.get(str(valuta_kod).upper(), "$")
-  pris_str = f"{float(pris_varde):.2f}"
-  
-  if sym in ["$", "€", "£"]:
-    return f"{sym}{pris_str}"
-  else:
-    return f"{pris_str}{sym}"
+    valuta_symboler = {
+        "USD": "$",
+        "SEK": " kr",
+        "NOK": " kr",
+        "DKK": " DKK",
+        "EUR": "€",
+        "GBP": "£",
+    }
+    sym = valuta_symboler.get(str(valuta_kod).upper(), "$")
+    pris_str = f"{float(pris_varde):.2f}"
+    
+    if sym in ["$", "€", "£"]:
+        return f"{sym}{pris_str}"
+    else:
+        return f"{pris_str}{sym}"
 
 # --- 3. UI Layout ---
 header_col1, header_col2 = st.columns([0.6, 0.4])
 
 with header_col1:
-  st.markdown(
-      "<h1 style='color: black; margin-bottom: 0;'>Finestra Analytics</h1>",
-      unsafe_allow_html=True,
-  )
+    st.markdown(
+        "<h1 style='color: black; margin-bottom: 0;'>Finestra Analytics</h1>",
+        unsafe_allow_html=True,
+    )
 
 with header_col2:
-  user_email = st.session_state["user"].email
-  st.markdown(
-      f"""
+    user_email = st.session_state["user"].email
+    st.markdown(
+        f"""
         <div style='display: flex; justify-content: flex-end; align-items: center; gap: 15px; padding-top: 15px;'>
             <span style='color: #555; font-size: 14px;'>Inloggad: <b>{user_email}</b></span>
         </div>
     """,
-      unsafe_allow_html=True,
-  )
+        unsafe_allow_html=True,
+    )
 
-  col_knapp1, col_knapp2 = st.columns([2, 1])
-  with col_knapp2:
-    if st.button("Logga ut", key="logout_btn"):
-      supabase.auth.sign_out()
-      st.session_state["user"] = None
-      st.rerun()
+    col_knapp1, col_knapp2 = st.columns([2, 1])
+    with col_knapp2:
+        if st.button("Logga ut", key="logout_btn"):
+            supabase.auth.sign_out()
+            st.session_state["user"] = None
+            st.rerun()
 
 st.divider()
 
@@ -214,124 +213,140 @@ tabs = st.tabs(
 
 # --- DASHBOARD ---
 with tabs[0]:
-  df = hämta_data()
+    df = hämta_data()
 
-  if not df.empty and "senast_uppdaterad" in df.columns:
-    try:
-      senaste_str = df["senast_uppdaterad"].dropna().max()
-      if pd.notna(senaste_str):
-        dt = datetime.fromisoformat(str(senaste_str).replace("Z", ""))
-        senast_kopierad = dt.strftime("%Y-%m-%d %H:%M")
-      else:
+    if not df.empty and "senast_uppdaterad" in df.columns:
+        try:
+            senaste_str = df["senast_uppdaterad"].dropna().max()
+            if pd.notna(senaste_str):
+                dt = datetime.fromisoformat(str(senaste_str).replace("Z", ""))
+                senast_kopierad = dt.strftime("%Y-%m-%d %H:%M")
+            else:
+                senast_kopierad = "Okänd"
+        except Exception:
+            senast_kopierad = "Okänd"
+    else:
         senast_kopierad = "Okänd"
-    except Exception:
-      senast_kopierad = "Okänd"
-  else:
-    senast_kopierad = "Okänd"
 
-  col_titel, col_tid = st.columns([3, 1])
-  with col_titel:
-    st.subheader("Marknadsläge")
-  with col_tid:
-    st.markdown(
-        f"<p style='text-align: right; color: gray; font-size: 13px; margin-top:"
-        f" 10px;'>Senast uppdaterad: <b>{senast_kopierad}</b></p>",
-        unsafe_allow_html=True,
-    )
+    col_titel, col_tid = st.columns([3, 1])
+    with col_titel:
+        st.subheader("Marknadsläge")
+    with col_tid:
+        st.markdown(
+            f"<p style='text-align: right; color: gray; font-size: 13px; margin-top:"
+            f" 10px;'>Senast uppdaterad: <b>{senast_kopierad}</b></p>",
+            unsafe_allow_html=True,
+        )
 
-  if not df.empty:
-    df["potential"] = pd.to_numeric(
-        df["potential"], errors="coerce"
-    ).fillna(0)
-    df["nuvarande"] = pd.to_numeric(
-        df["nuvarande"], errors="coerce"
-    ).fillna(0)
-    df["target"] = pd.to_numeric(df["target"], errors="coerce").fillna(0)
-    df["antal_koprek"] = pd.to_numeric(
-        df["antal_koprek"], errors="coerce"
-    ).fillna(0)
+    if not df.empty:
+        df["potential"] = pd.to_numeric(
+            df["potential"], errors="coerce"
+        ).fillna(0)
+        df["nuvarande"] = pd.to_numeric(
+            df["nuvarande"], errors="coerce"
+        ).fillna(0)
+        df["target"] = pd.to_numeric(df["target"], errors="coerce").fillna(0)
+        df["antal_koprek"] = pd.to_numeric(
+            df["antal_koprek"], errors="coerce"
+        ).fillna(0)
 
-    if "valuta" not in df.columns:
-      df["valuta"] = "USD"
+        if "valuta" not in df.columns:
+            df["valuta"] = "USD"
 
-    # Använd Finestra Score direkt om den beräknas i skriptet, annars fallback
-    if "finestra_score" in df.columns:
-        df["Finestra Score"] = pd.to_numeric(df["finestra_score"], errors="coerce").fillna(50)
-    else:
-        max_pot = df["potential"].max()
-        norm_pot = (df["potential"] / (max_pot if max_pot > 0 else 1)) * 60
-        max_rek = df["antal_koprek"].max()
-        norm_rek = (df["antal_koprek"] / (max_rek if max_rek > 0 else 1)) * 40
-        df["Finestra Score"] = (norm_pot + norm_rek).round(0)
+        # --- DYNAMISK FINESTRA SCORE (1–100) ---
+        # 60% vikt på riktkurs-potential (maxad vid 50%), 40% vikt på analitiker-köprekar (maxad vid 30)
+        pot_score = df["potential"].clip(lower=0, upper=50) * (60.0 / 50.0)
+        kop_score = df["antal_koprek"].clip(lower=0, upper=30) * (40.0 / 30.0)
+        df["Finestra Score"] = (pot_score + kop_score).round().astype(int).clip(lower=1, upper=100)
 
-    df["sektor_sv"] = df["sektor"].map(sektor_namn_sv).fillna(df["sektor"])
+        df["sektor_sv"] = df["sektor"].map(sektor_namn_sv).fillna(df["sektor"])
 
-    # Extrahera land/börs från ticker-suffix (t.ex. .SE -> Sverige, .DE -> Tyskland, annars Övriga)
-    def extrahera_land(ticker):
-        if not isinstance(ticker, str):
-            return "Övriga"
-        if ticker.endswith(".SE"):
-            return "Sverige"
-        elif ticker.endswith(".DE"):
-            return "Tyskland"
-        elif ticker.endswith(".US"):
-            return "USA"
-        else:
-            return "Övriga"
+        # Extrahera land/börs från ticker-suffix
+        def extrahera_land(row):
+            ticker = str(row.get("ticker", ""))
+            valuta = str(row.get("valuta", "")).upper()
+            if ticker.endswith(".SE") or valuta == "SEK":
+                return "Sverige"
+            elif ticker.endswith(".DE"):
+                return "Tyskland"
+            elif ticker.endswith(".US") or valuta == "USD":
+                return "USA"
+            else:
+                return "Övriga"
 
-    df["Land"] = df["ticker"].apply(extrahera_land)
+        df["Land"] = df.apply(extrahera_land, axis=1)
 
-    # Formatera priser
-    df["Kurs"] = [formatera_pris(row["nuvarande"], row["valuta"]) for _, row in df.iterrows()]
-    df["Riktkurs"] = [formatera_pris(row["target"], row["valuta"]) for _, row in df.iterrows()]
-    df["Potential (%)"] = df["potential"].round(1).astype(str) + " %"
+        # Formatera priser
+        df["Kurs"] = [formatera_pris(row["nuvarande"], row["valuta"]) for _, row in df.iterrows()]
+        df["Riktkurs"] = [formatera_pris(row["target"], row["valuta"]) for _, row in df.iterrows()]
+        df["Potential (%)"] = df["potential"].round(1).astype(str) + " %"
 
-    display_df = df.rename(
-        columns={
-            "ticker": "Ticker",
-            "name": "Namn",
-            "sektor_sv": "Sektor",
-            "antal_koprek": "Köprekar",
-        }
-    )
+        display_df = df.rename(
+            columns={
+                "ticker": "Ticker",
+                "name": "Namn",
+                "sektor_sv": "Sektor",
+                "antal_koprek": "Köprekar",
+            }
+        )
 
-    if has_access(st.session_state["user_tier"], "sector_selection"):
-        # Filter-kolumner sida vid sida
-        col_f1, col_f2 = st.columns(2)
-        
-        with col_f1:
-            unika_lander = sorted(display_df["Land"].unique().tolist())
-            valda_lander = st.multiselect("Filtrera på marknad/land:", unika_lander, default=unika_lander)
+        if has_access(st.session_state["user_tier"], "sector_selection"):
+            # Filter-kolumner sida vid sida
+            col_f1, col_f2 = st.columns(2)
             
-        with col_f2:
-            unika_sektorer = sorted([s for s in display_df["Sektor"].unique() if s and s != "N/A"])
-            valda_sektorer = st.multiselect("Filtrera på sektor:", unika_sektorer, default=unika_sektorer)
+            with col_f1:
+                unika_lander = sorted([x for x in display_df["Land"].unique() if pd.notna(x)])
+                valj_land_options = ["Alla marknader"] + unika_lander
+                
+                selected_marknad = st.selectbox(
+                    "Filtrera på marknad/land:",
+                    options=valj_land_options,
+                    index=0  # Standard: Alla marknader
+                )
+                
+            with col_f2:
+                unika_sektorer = sorted([s for s in display_df["Sektor"].unique() if s and pd.notna(s) and str(s).strip() != "" and str(s) != "N/A" and str(s) != "Okänd"])
+                
+                selected_sektorer = st.multiselect(
+                    "Filtrera på sektor:",
+                    options=unika_sektorer,
+                    default=[],  # Standard: Tom lista = Alla sektorer visas rent och snyggt!
+                    placeholder="Alla sektorer (visas som standard)"
+                )
 
-        # Applicera filter
-        visnings_df = display_df[
-            display_df["Land"].isin(valda_lander) & 
-            display_df["Sektor"].isin(valda_sektorer)
-        ].sort_values(by="Finestra Score", ascending=False)
-        
+            # Applicera filter
+            visnings_df = display_df.copy()
+
+            if selected_marknad != "Alla marknader":
+                visnings_df = visnings_df[visnings_df["Land"] == selected_marknad]
+
+            if selected_sektorer:
+                visnings_df = visnings_df[visnings_df["Sektor"].isin(selected_sektorer)]
+
+            visnings_df = visnings_df.sort_values(by="Finestra Score", ascending=False)
+            
+        else:
+            st.info("Visar Topp 4 (Insight). Uppgradera till Advance för full tillgång till alla marknader och sektorer!")
+            visnings_df = display_df.sort_values(by="Finestra Score", ascending=False).head(4)
+
+        st.dataframe(
+            visnings_df[[
+                "Ticker",
+                "Namn",
+                "Finestra Score",
+                "Kurs",
+                "Riktkurs",
+                "Potential (%)",
+                "Köprekar",
+                "Sektor",
+                "Land"
+            ]],
+            use_container_width=True,
+            hide_index=True,
+            height=600
+        )
     else:
-        st.info("Visar Topp 4 (Insight). Uppgradera till Advance för full tillgång till alla marknader och sektorer!")
-        visnings_df = display_df.sort_values(by="Finestra Score", ascending=False).head(4)
-
-    st.dataframe(
-        visnings_df[[
-            "Ticker",
-            "Namn",
-            "Finestra Score",
-            "Kurs",
-            "Riktkurs",
-            "Potential (%)",
-            "Köprekar",
-            "Sektor",
-            "Land"
-        ]],
-        use_container_width=True,
-        hide_index=True,
-    )
+        st.info("Ingen data tillgänglig i Supabase ännu. Kör `arbetshasten.py` för att fylla tabellen.")
 
 # --- MARKET RESEARCH ---
 with tabs[1]:
