@@ -23,13 +23,32 @@ def hamta_valuta_fran_suffix(symbol):
     return "USD"
 
 def hamta_alla_tickers():
-    """Hämtar dynamiskt aktier från officiella index för USA, UK, Tyskland, Sverige, Norge, Danmark och Finland."""
+    """Hämtar dynamiskt aktier från EODHD för Sverige samt officiella index för övriga länder."""
     print("-> Hämtar globala aktielistor från nätet...")
     tickers = set()
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-    # 1. USA (S&P 500)
+    # 1. SVERIGE (Nasdaq Stockholm via EODHD Exchange Symbol List)
+    if EODHD_API_KEY:
+        try:
+            url_st = f"https://eodhd.com/api/exchange-symbol-list/ST?api_token={EODHD_API_KEY}&fmt=json"
+            res = requests.get(url_st)
+            if res.status_code == 200:
+                data = res.json()
+                se_count = 0
+                for item in data:
+                    asset_type = str(item.get("Type", "")).lower()
+                    if asset_type in ["common stock", "stock"]:
+                        code = item.get("Code", "")
+                        if code:
+                            tickers.add(f"{code}.ST")
+                            se_count += 1
+                print(f"   [SE] Hämtade {se_count} aktier från Nasdaq Stockholm via EODHD API")
+        except Exception as e:
+            print(f"   [SE] Fel vid EODHD-hämtning för Sverige: {e}")
+
+    # 2. USA (S&P 500)
     try:
         res = requests.get("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", headers=headers)
         if res.status_code == 200:
@@ -40,7 +59,7 @@ def hamta_alla_tickers():
     except Exception as e:
         print(f"   [USA] Fel vid hämtning: {e}")
 
-    # 2. STORBRITANNIEN (FTSE 100)
+    # 3. STORBRITANNIEN (FTSE 100)
     try:
         res = requests.get("https://en.wikipedia.org/wiki/FTSE_100_Index", headers=headers)
         if res.status_code == 200:
@@ -55,7 +74,7 @@ def hamta_alla_tickers():
     except Exception as e:
         print(f"   [UK] Fel vid hämtning: {e}")
 
-    # 3. TYSKLAND (DAX 40 & MDAX)
+    # 4. TYSKLAND (DAX 40 & MDAX)
     for url, label in [("https://en.wikipedia.org/wiki/DAX", "DAX"), ("https://en.wikipedia.org/wiki/MDAX", "MDAX")]:
         try:
             res = requests.get(url, headers=headers)
@@ -70,24 +89,6 @@ def hamta_alla_tickers():
                         break
         except Exception as e:
             print(f"   [DE] Fel vid hämtning av {label}: {e}")
-
-    # 4. SVERIGE (OMX Stockholm Large & Mid Cap)
-    try:
-        res = requests.get("https://sv.wikipedia.org/wiki/Nasdaq_Stockholm", headers=headers)
-        if res.status_code == 200:
-            tables = pd.read_html(io.StringIO(res.text))
-            se_count = 0
-            for df in tables:
-                col = next((c for c in df.columns if any(k in str(c).lower() for k in ["kortnamn", "ticker", "symbol", "bolag"])), None)
-                if col and len(df) > 5:
-                    sample_val = str(df[col].iloc[0])
-                    if len(sample_val) < 15 and not " " in sample_val.strip():
-                        se_list = df[col].astype(str).str.strip().apply(lambda x: f"{x}.ST" if not x.endswith(".ST") else x)
-                        tickers.update(se_list.tolist())
-                        se_count += len(se_list)
-            print(f"   [SE] Hämtade {se_count} bolag från Stockholm Large/Mid Cap")
-    except Exception as e:
-        print(f"   [SE] Fel vid hämtning: {e}")
 
     # 5. NORGE (OBX Index)
     try:
@@ -153,26 +154,24 @@ def kör_global_pipeline():
 
     for i, symbol in enumerate(raw_tickers, 1):
         eod_symbol = symbol
-        
+
         if symbol.endswith(".US"):
             yahoo_symbol = symbol.replace(".US", "")
         else:
             yahoo_symbol = symbol
 
         try:
-            # 1. Hämta pris med strict split-justering via yfinance history istället för enbart fast_info
+            # 1. Hämta pris med split-justering via yfinance history
             ticker_yf = yf.Ticker(yahoo_symbol)
             nuvarande_pris = 0.0
 
             try:
-                # Använd auto_adjust=True för att säkert få split- och utdelningsjusterade priser
                 hist = ticker_yf.history(period="5d", auto_adjust=True)
                 if not hist.empty:
                     nuvarande_pris = float(hist["Close"].iloc[-1])
             except Exception:
                 pass
 
-            # Fallback till fast_info om history misslyckas
             if nuvarande_pris <= 0:
                 try:
                     fast_info = ticker_yf.fast_info
@@ -202,7 +201,7 @@ def kör_global_pipeline():
 
                     namn = general.get("Name", yahoo_symbol)
                     sektor = general.get("Sector", "Okänd")
-                    
+
                     eod_valuta = general.get("CurrencyCode", "") or general.get("Currency", "")
                     if eod_valuta:
                         valuta = eod_valuta
@@ -213,18 +212,26 @@ def kör_global_pipeline():
                     buy = int(analyst_ratings.get("Buy", 0) or 0)
                     antal_koprek = strong_buy + buy
 
-            # 3. Fallback till Yahoo Info om EODHD saknar data
+            # 3. Fallback till Yahoo Finance om köprekommendationer eller target saknas från EODHD
             try:
+                if antal_koprek == 0:
+                    rec_summary = ticker_yf.recommendations_summary
+                    if rec_summary is not None and not rec_summary.empty:
+                        senaste_rad = rec_summary.iloc[0]
+                        sb = int(senaste_rad.get("strongBuy", 0) or 0)
+                        b = int(senaste_rad.get("buy", 0) or 0)
+                        antal_koprek = sb + b
+
                 yf_info = ticker_yf.info
                 if target == 0.0:
                     target = float(yf_info.get("targetMeanPrice", 0) or 0)
                 if namn == yahoo_symbol:
                     namn = yf_info.get("shortName", yahoo_symbol)
                     sektor = yf_info.get("sector", sektor)
-                
+
                 if antal_koprek == 0:
-                    num_analysts = int(yf_info.get("numberOfAnalystOpinions", 0) or 0)
                     rec_key = str(yf_info.get("recommendationKey", "")).lower()
+                    num_analysts = int(yf_info.get("numberOfAnalystOpinions", 0) or 0)
                     if rec_key in ["buy", "strong_buy"]:
                         antal_koprek = num_analysts if num_analysts > 0 else 1
             except Exception:
