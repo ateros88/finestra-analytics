@@ -11,36 +11,18 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 
 def kör_us500_test():
-    print("--- Startar fokuserat US-test med korrekt .US-format ---")
+    print("--- Startar US-test med storbolag ---")
 
     if not EODHD_API_KEY:
         print("FEL: EODHD_API_KEY saknas i miljövariabler.")
         return
 
-    exchange_code = "US"
-    url = f"https://eodhd.com/api/exchange-symbol-list/{exchange_code}?api_token={EODHD_API_KEY}&fmt=json&type=common_stock"
-    
-    print(f"Hämtar ticker-lista för {exchange_code}...")
-    response = requests.get(url)
-    
-    if response.status_code != 200:
-        print(f"Kunde inte hämta ticker-lista för {exchange_code}. Statuskod: {response.status_code}")
-        return
-
-    data = response.json()
-    print(f"Hittade {len(data)} st råa objekt. Testar de första 5 st...")
-    
+    # Vi kör en säker lista med kända storbolag för att verifiera att allt flödar till Supabase
+    test_tickers = ["AAPL.US", "MSFT.US", "NVDA.US", "GOOGL.US", "AMZN.US", "META.US", "TSLA.US"]
     nu_tid = datetime.now().isoformat()
     sparade = 0
 
-    # Vi loopar igenom de första 5 objekten direkt från listan för att få åtkomst till "Code"
-    for item in data[:5]:
-        code = item.get("Code")
-        if not code:
-            continue
-            
-        # EODHD kräver .US för amerikanska aktier i grunddata-endpoints
-        ticker = f"{code}.US"
+    for ticker in test_tickers:
         print(f"\nUndersöker ticker: {ticker}")
 
         try:
@@ -63,18 +45,9 @@ def kör_us500_test():
 
             nuvarande_pris = float(highlights.get("LatestPrice", 0) or 0)
             print(f"  - LatestPrice från highlights: {nuvarande_pris}")
-            
-            if nuvarande_pris <= 0:
-                rt_url = f"https://eodhd.com/api/real-time/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
-                rt_res = requests.get(rt_url)
-                print(f"  - Real-time statuskod: {rt_res.status_code}")
-                if rt_res.status_code == 200:
-                    rt_data = rt_res.json()
-                    nuvarande_pris = float(rt_data.get("close", 0) or 0)
-                    print(f"  - Pris från real-time: {nuvarande_pris}")
 
             if nuvarande_pris <= 0:
-                print("  -> Hoppar över: Priset är fortfarande 0")
+                print("  -> Hoppar över: Inget pris hittades i highlights")
                 continue
 
             target = float(analyst_ratings.get("TargetPrice", 0) or 0)
