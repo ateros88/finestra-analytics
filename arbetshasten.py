@@ -13,37 +13,125 @@ load_dotenv()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 
-def hämta_us500_tickers():
-    """Hämtar den aktuella listan på alla S&P 500-bolag från Wikipedia."""
-    print("-> Hämtar US500 (S&P 500) aktielista...")
+def hamta_alla_tickers():
+    """Hämtar dynamiskt aktier från officiella index för USA, UK, Tyskland, Sverige, Norge, Danmark och Finland."""
+    print("-> Hämtar globala aktielistor från nätet...")
+    tickers = set()
+
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+    # 1. USA (S&P 500)
     try:
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        # Custom User-Agent header för att undvika HTTP 403 Forbidden
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        res = requests.get(url, headers=headers)
-        
+        res = requests.get("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", headers=headers)
+        if res.status_code == 200:
+            df = pd.read_html(io.StringIO(res.text))[0]
+            sp = df["Symbol"].astype(str).str.replace(".", "-", regex=False) + ".US"
+            tickers.update(sp.tolist())
+            print(f"   [USA] Hämtade {len(sp)} bolag från S&P 500")
+    except Exception as e:
+        print(f"   [USA] Fel vid hämtning: {e}")
+
+    # 2. STORBRITANNIEN (FTSE 100)
+    try:
+        res = requests.get("https://en.wikipedia.org/wiki/FTSE_100_Index", headers=headers)
         if res.status_code == 200:
             tables = pd.read_html(io.StringIO(res.text))
-            df = tables[0]
-            tickers = df['Symbol'].tolist()
-            print(f"-> Hittade {len(tickers)} bolag i S&P 500.")
-            return tickers
-        else:
-            raise Exception(f"HTTP Status {res.status_code}")
-            
+            for df in tables:
+                col = next((c for c in df.columns if str(c).upper() in ["EPIC", "TICKER"]), None)
+                if col:
+                    ftse = df[col].astype(str).str.strip().apply(lambda x: f"{x}.L" if not x.endswith(".L") else x)
+                    tickers.update(ftse.tolist())
+                    print(f"   [UK] Hämtade {len(ftse)} bolag från FTSE 100")
+                    break
     except Exception as e:
-        print(f"FEL vid hämtning av S&P 500-lista: {e}")
-        return ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "BRK.B", "JNJ", "V"]
+        print(f"   [UK] Fel vid hämtning: {e}")
 
-def kör_us500_pipeline():
-    print("=== Startar Finestra Analytics US500 Pipeline ===")
+    # 3. TYSKLAND (DAX 40 & MDAX)
+    for url, label in [("https://en.wikipedia.org/wiki/DAX", "DAX"), ("https://en.wikipedia.org/wiki/MDAX", "MDAX")]:
+        try:
+            res = requests.get(url, headers=headers)
+            if res.status_code == 200:
+                tables = pd.read_html(io.StringIO(res.text))
+                for df in tables:
+                    if "Ticker" in df.columns:
+                        de = df["Ticker"].astype(str).str.strip().apply(lambda x: x if "." in x else f"{x}.DE")
+                        tickers.update(de.tolist())
+                        print(f"   [DE] Hämtade {len(de)} bolag från {label}")
+                        break
+        except Exception as e:
+            print(f"   [DE] Fel vid hämtning av {label}: {e}")
+
+    # 4. SVERIGE (Nasdaq Stockholm Large & Mid Cap via Wikipedia)
+    try:
+        res = requests.get("https://sv.wikipedia.org/wiki/Nasdaq_Stockholm", headers=headers)
+        if res.status_code == 200:
+            tables = pd.read_html(io.StringIO(res.text))
+            se_count = 0
+            for df in tables:
+                col = next((c for c in df.columns if any(k in str(c).lower() for k in ["kortnamn", "ticker", "symbol"])), None)
+                if col:
+                    se_list = df[col].astype(str).str.strip().apply(lambda x: f"{x}.ST" if not x.endswith(".ST") else x)
+                    tickers.update(se_list.tolist())
+                    se_count += len(se_list)
+            print(f"   [SE] Hämtade {se_count} bolag från Stockholm Large/Mid Cap")
+    except Exception as e:
+        print(f"   [SE] Fel vid hämtning: {e}")
+
+    # 5. NORGE (OBX Index)
+    try:
+        res = requests.get("https://en.wikipedia.org/wiki/OBX_Index", headers=headers)
+        if res.status_code == 200:
+            tables = pd.read_html(io.StringIO(res.text))
+            for df in tables:
+                col = next((c for c in df.columns if str(c).upper() in ["TICKER", "SYMBOL"]), None)
+                if col:
+                    obx = df[col].astype(str).str.strip().apply(lambda x: f"{x}.OL" if not x.endswith(".OL") else x)
+                    tickers.update(obx.tolist())
+                    print(f"   [NO] Hämtade {len(obx)} bolag från OBX")
+                    break
+    except Exception as e:
+        print(f"   [NO] Fel vid hämtning: {e}")
+
+    # 6. DANMARK (OMX Copenhagen 25)
+    try:
+        res = requests.get("https://en.wikipedia.org/wiki/OMX_Copenhagen_25", headers=headers)
+        if res.status_code == 200:
+            tables = pd.read_html(io.StringIO(res.text))
+            for df in tables:
+                col = next((c for c in df.columns if str(c).upper() in ["TICKER", "SYMBOL"]), None)
+                if col:
+                    c25 = df[col].astype(str).str.strip().apply(lambda x: f"{x}.CO" if not x.endswith(".CO") else x)
+                    tickers.update(c25.tolist())
+                    print(f"   [DK] Hämtade {len(c25)} bolag från OMXC25")
+                    break
+    except Exception as e:
+        print(f"   [DK] Fel vid hämtning: {e}")
+
+    # 7. FINLAND (OMX Helsinki 25)
+    try:
+        res = requests.get("https://en.wikipedia.org/wiki/OMX_Helsinki_25", headers=headers)
+        if res.status_code == 200:
+            tables = pd.read_html(io.StringIO(res.text))
+            for df in tables:
+                if "Ticker" in df.columns:
+                    h25 = df["Ticker"].astype(str).str.strip().apply(lambda x: f"{x}.HE" if not x.endswith(".HE") else x)
+                    tickers.update(h25.tolist())
+                    print(f"   [FI] Hämtade {len(h25)} bolag från OMXH25")
+                    break
+    except Exception as e:
+        print(f"   [FI] Fel vid hämtning: {e}")
+
+    return sorted(list(tickers))
+
+def kör_global_pipeline():
+    print("=== Startar Finestra Analytics Global Pipeline ===")
     start_tid = time.time()
 
     if not EODHD_API_KEY:
         print("FEL: EODHD_API_KEY saknas i miljövariablerna.")
         return
 
-    raw_tickers = hämta_us500_tickers()
+    raw_tickers = hamta_alla_tickers()
     nu_tid = datetime.now().isoformat()
 
     batch_buffer = []
@@ -51,10 +139,14 @@ def kör_us500_pipeline():
     BATCH_SIZE = 50
 
     for i, symbol in enumerate(raw_tickers, 1):
-        # Formatkonvertering (t.ex. BRK.B -> BRK-B för Yahoo, BRK-B.US för EODHD)
-        clean_symbol = symbol.replace(".", "-")
-        yahoo_symbol = clean_symbol
-        eod_symbol = f"{clean_symbol}.US"
+        # Dynamisk formatkonvertering för olika börser
+        eod_symbol = symbol
+        
+        # Yahoo Finance kräver ren symbol för USA (t.ex. AAPL), men behåller suffix för Europa (.ST, .DE, .L, etc.)
+        if symbol.endswith(".US"):
+            yahoo_symbol = symbol.replace(".US", "")
+        else:
+            yahoo_symbol = symbol
 
         try:
             # 1. Hämta exakt ojusterad slutkurs via Yahoo Finance fast_info
@@ -114,6 +206,7 @@ def kör_us500_pipeline():
                     if namn == yahoo_symbol:
                         namn = yf_info.get("shortName", yahoo_symbol)
                         sektor = yf_info.get("sector", sektor)
+                        valuta = yf_info.get("currency", valuta)
                 except Exception:
                     pass
 
@@ -132,7 +225,7 @@ def kör_us500_pipeline():
                 "senast_uppdaterad": nu_tid,
             })
 
-            print(f"[{i}/{len(raw_tickers)}] {eod_symbol} ({namn}) | Pris: {nuvarande_pris:.2f} | Target: {target:.2f} | Potential: {potential}%")
+            print(f"[{i}/{len(raw_tickers)}] {eod_symbol} ({namn}) | Pris: {nuvarande_pris:.2f} {valuta} | Target: {target:.2f} | Potential: {potential}%")
 
             # Sänd till Supabase i grupper om 50
             if len(batch_buffer) >= BATCH_SIZE:
@@ -154,10 +247,10 @@ def kör_us500_pipeline():
 
     tidsatgang = round(time.time() - start_tid, 1)
     print(f"\n==========================================")
-    print(f"   US500 KÖRNING KLAR!")
+    print(f"   GLOBAL KÖRNING KLAR!")
     print(f"   Totalt uppdaterade bolag i Supabase: {totalt_sparade}")
     print(f"   Tidsatgång: {tidsatgang} sekunder")
     print(f"==========================================")
 
 if __name__ == "__main__":
-    kör_us500_pipeline()
+    kör_global_pipeline()
