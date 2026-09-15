@@ -13,27 +13,26 @@ load_dotenv()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 
-def hamta_valuta_fran_suffix(symbol):
+def hamta_valuta_fran_suffix(symbol: str) -> str:
     """Bestämmer reservvaluta baserat på aktiens börssuffix om API saknar valuta."""
     if symbol.endswith(".ST"): return "SEK"
     if symbol.endswith(".OL"): return "NOK"
     if symbol.endswith(".CO"): return "DKK"
-    if symbol.endswith(".HE") or symbol.endswith(".DE"): return "EUR"
+    if symbol.endswith(".HE") or symbol.endswith(".DE") or symbol.endswith(".PA"): return "EUR"
     if symbol.endswith(".L"): return "GBP"
     return "USD"
 
-def hamta_alla_tickers():
+def hamta_alla_tickers() -> list[str]:
     """Hämtar dynamiskt aktier från EODHD för Sverige samt officiella index för övriga länder."""
     print("-> Hämtar globala aktielistor från nätet...")
     tickers = set()
-
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
     # 1. SVERIGE (Nasdaq Stockholm via EODHD Exchange Symbol List)
     if EODHD_API_KEY:
         try:
             url_st = f"https://eodhd.com/api/exchange-symbol-list/ST?api_token={EODHD_API_KEY}&fmt=json"
-            res = requests.get(url_st)
+            res = requests.get(url_st, timeout=15)
             if res.status_code == 200:
                 data = res.json()
                 se_count = 0
@@ -50,18 +49,18 @@ def hamta_alla_tickers():
 
     # 2. USA (S&P 500)
     try:
-        res = requests.get("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", headers=headers)
+        res = requests.get("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", headers=headers, timeout=15)
         if res.status_code == 200:
             df = pd.read_html(io.StringIO(res.text))[0]
             sp = df["Symbol"].astype(str).str.replace(".", "-", regex=False) + ".US"
             tickers.update(sp.tolist())
             print(f"   [USA] Hämtade {len(sp)} bolag från S&P 500")
     except Exception as e:
-        print(f"   [USA] Fel vid hämtning: {e}")
+        print(f"   [USA] Fel vid hämtning av S&P 500: {e}")
 
     # 3. STORBRITANNIEN (FTSE 100)
     try:
-        res = requests.get("https://en.wikipedia.org/wiki/FTSE_100_Index", headers=headers)
+        res = requests.get("https://en.wikipedia.org/wiki/FTSE_100_Index", headers=headers, timeout=15)
         if res.status_code == 200:
             tables = pd.read_html(io.StringIO(res.text))
             for df in tables:
@@ -72,12 +71,12 @@ def hamta_alla_tickers():
                     print(f"   [UK] Hämtade {len(ftse)} bolag från FTSE 100")
                     break
     except Exception as e:
-        print(f"   [UK] Fel vid hämtning: {e}")
+        print(f"   [UK] Fel vid hämtning av FTSE 100: {e}")
 
     # 4. TYSKLAND (DAX 40 & MDAX)
     for url, label in [("https://en.wikipedia.org/wiki/DAX", "DAX"), ("https://en.wikipedia.org/wiki/MDAX", "MDAX")]:
         try:
-            res = requests.get(url, headers=headers)
+            res = requests.get(url, headers=headers, timeout=15)
             if res.status_code == 200:
                 tables = pd.read_html(io.StringIO(res.text))
                 for df in tables:
@@ -92,7 +91,7 @@ def hamta_alla_tickers():
 
     # 5. NORGE (OBX Index)
     try:
-        res = requests.get("https://en.wikipedia.org/wiki/OBX_Index", headers=headers)
+        res = requests.get("https://en.wikipedia.org/wiki/OBX_Index", headers=headers, timeout=15)
         if res.status_code == 200:
             tables = pd.read_html(io.StringIO(res.text))
             for df in tables:
@@ -103,11 +102,11 @@ def hamta_alla_tickers():
                     print(f"   [NO] Hämtade {len(obx)} bolag från OBX")
                     break
     except Exception as e:
-        print(f"   [NO] Fel vid hämtning: {e}")
+        print(f"   [NO] Fel vid hämtning av OBX: {e}")
 
     # 6. DANMARK (OMX Copenhagen 25)
     try:
-        res = requests.get("https://en.wikipedia.org/wiki/OMX_Copenhagen_25", headers=headers)
+        res = requests.get("https://en.wikipedia.org/wiki/OMX_Copenhagen_25", headers=headers, timeout=15)
         if res.status_code == 200:
             tables = pd.read_html(io.StringIO(res.text))
             for df in tables:
@@ -118,11 +117,11 @@ def hamta_alla_tickers():
                     print(f"   [DK] Hämtade {len(c25)} bolag från OMXC25")
                     break
     except Exception as e:
-        print(f"   [DK] Fel vid hämtning: {e}")
+        print(f"   [DK] Fel vid hämtning av OMXC25: {e}")
 
     # 7. FINLAND (OMX Helsinki 25)
     try:
-        res = requests.get("https://en.wikipedia.org/wiki/OMX_Helsinki_25", headers=headers)
+        res = requests.get("https://en.wikipedia.org/wiki/OMX_Helsinki_25", headers=headers, timeout=15)
         if res.status_code == 200:
             tables = pd.read_html(io.StringIO(res.text))
             for df in tables:
@@ -133,7 +132,22 @@ def hamta_alla_tickers():
                     print(f"   [FI] Hämtade {len(h25)} bolag från OMXH25")
                     break
     except Exception as e:
-        print(f"   [FI] Fel vid hämtning: {e}")
+        print(f"   [FI] Fel vid hämtning av OMXH25: {e}")
+
+    # 8. FRANKRIKE (CAC 40)
+    try:
+        res = requests.get("https://en.wikipedia.org/wiki/CAC_40", headers=headers, timeout=15)
+        if res.status_code == 200:
+            tables = pd.read_html(io.StringIO(res.text))
+            for df in tables:
+                col = next((c for c in df.columns if any(k in str(c).lower() for k in ["ticker", "symbol"])), None)
+                if col:
+                    cac = df[col].astype(str).str.strip().apply(lambda x: f"{x}.PA" if not x.endswith(".PA") else x)
+                    tickers.update(cac.tolist())
+                    print(f"   [FR] Hämtade {len(cac)} bolag från CAC 40")
+                    break
+    except Exception as e:
+        print(f"   [FR] Fel vid hämtning av CAC 40: {e}")
 
     return sorted(list(tickers))
 
@@ -155,13 +169,14 @@ def kor_global_pipeline():
     for i, symbol in enumerate(raw_tickers, 1):
         eod_symbol = symbol
 
+        # Anpassa symbolnamn för Yahoo Finance
         if symbol.endswith(".US"):
             yahoo_symbol = symbol.replace(".US", "")
         else:
             yahoo_symbol = symbol
 
         try:
-            # 1. Hämta pris med split-justering via yfinance history
+            # 1. Hämta pris med split-justering via yfinance
             ticker_yf = yf.Ticker(yahoo_symbol)
             nuvarande_pris = 0.0
 
@@ -191,7 +206,7 @@ def kor_global_pipeline():
 
             # 2. Hämta Fundamenta & Target Price från EODHD
             url_fund = f"https://eodhd.com/api/fundamentals/{eod_symbol}?api_token={EODHD_API_KEY}&fmt=json"
-            res_fund = requests.get(url_fund)
+            res_fund = requests.get(url_fund, timeout=10)
 
             if res_fund.status_code == 200:
                 fund_data = res_fund.json()
@@ -212,7 +227,7 @@ def kor_global_pipeline():
                     buy = int(analyst_ratings.get("Buy", 0) or 0)
                     antal_koprek = strong_buy + buy
 
-            # 3. Fallback till Yahoo Finance om köprekommendationer eller target saknas från EODHD
+            # 3. Fallback till Yahoo Finance om information saknas från EODHD
             try:
                 if antal_koprek == 0:
                     rec_summary = ticker_yf.recommendations_summary
@@ -281,11 +296,11 @@ def kor_global_pipeline():
         print(f"---> [SUPABASE] Sparade sista batch om {len(batch_buffer)} bolag!")
 
     tidsatgang = round(time.time() - start_tid, 1)
-    print(f"\n==========================================")
-    print(f"   GLOBAL KÖRNING KLAR!")
+    print("\n==========================================")
+    print("   GLOBAL KÖRNING KLAR!")
     print(f"   Totalt uppdaterade bolag i Supabase: {totalt_sparade}")
     print(f"   Tidsatgång: {tidsatgang} sekunder")
-    print(f"==========================================")
+    print("==========================================")
 
 if __name__ == "__main__":
     kor_global_pipeline()
