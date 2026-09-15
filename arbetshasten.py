@@ -11,7 +11,7 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 
 def kör_us500_test():
-    print("--- Startar fokuserat US-test med felsökning ---")
+    print("--- Startar fokuserat US-test med korrekt .US-format ---")
 
     if not EODHD_API_KEY:
         print("FEL: EODHD_API_KEY saknas i miljövariabler.")
@@ -28,22 +28,19 @@ def kör_us500_test():
         return
 
     data = response.json()
-    tickers = []
-    for item in data:
-        code = item.get("Code")
-        exchange = item.get("Exchange")
-        if code and exchange:
-            tickers.append(f"{code}.{exchange}")
-
-    print(f"Hittade {len(tickers)} st aktier för US. Testar de första 5 st...")
+    print(f"Hittade {len(data)} st råa objekt. Testar de första 5 st...")
     
-    # Vi testar bara de första 5 för att se exakt vad som händer i API-svaret
-    test_batch = tickers[:5]
     nu_tid = datetime.now().isoformat()
     sparade = 0
 
-    for raw_ticker in test_batch:
-        ticker = str(raw_ticker).strip().upper()
+    # Vi loopar igenom de första 5 objekten direkt från listan för att få åtkomst till "Code"
+    for item in data[:5]:
+        code = item.get("Code")
+        if not code:
+            continue
+            
+        # EODHD kräver .US för amerikanska aktier i grunddata-endpoints
+        ticker = f"{code}.US"
         print(f"\nUndersöker ticker: {ticker}")
 
         try:
@@ -95,7 +92,7 @@ def kör_us500_test():
                 target = 0.0
                 potential = 0.0
 
-            # Försök spara till Supabase
+            # Spara direkt till Supabase
             print(f"  -> Sparar till Supabase: {ticker} ({namn}), Pris: {nuvarande_pris}")
             supabase.table("analyser_eod").upsert({
                 "ticker": ticker,
