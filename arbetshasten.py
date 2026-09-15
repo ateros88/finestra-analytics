@@ -11,13 +11,13 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 
 def kör_us500_test():
-    print("--- Startar US-test med EOD-pris och Fundamentals ---")
+    print("--- Startar detaljerad EOD-felsökning ---")
 
     if not EODHD_API_KEY:
         print("FEL: EODHD_API_KEY saknas i miljövariabler.")
         return
 
-    test_tickers = ["AAPL.US", "MSFT.US", "NVDA.US", "GOOGL.US", "AMZN.US", "META.US", "TSLA.US"]
+    test_tickers = ["AAPL.US", "MSFT.US", "NVDA.US"]
     nu_tid = datetime.now().isoformat()
     sparade = 0
 
@@ -25,23 +25,37 @@ def kör_us500_test():
         print(f"\nUndersöker ticker: {ticker}")
 
         try:
-            # 1. Hämta senaste slutpris via EOD-endpointen (fungerar med standardpaketet)
-            url_eod = f"https://eodhd.com/api/eod/{ticker}?api_token={EODHD_API_KEY}&fmt=json&limit=1"
+            # Använd EODHD:s officiella filter för senaste slutpris
+            url_eod = f"https://eodhd.com/api/eod/{ticker}?api_token={EODHD_API_KEY}&filter=last_close&fmt=json"
             res_eod = requests.get(url_eod)
             
-            nuvarande_pris = 0.0
-            if res_eod.status_code == 200:
-                eod_data = res_eod.json()
-                if isinstance(eod_data, list) and len(eod_data) > 0:
-                    nuvarande_pris = float(eod_data[-1].get("close", 0) or 0)
-            
-            print(f"  - EOD Pris (Close): {nuvarande_pris}")
+            print(f"  - EOD Statuskod: {res_eod.status_code}")
+            print(f"  - EOD Svarstext: {res_eod.text}")
+
+            if res_eod.status_code != 200:
+                print("  -> EOD-anropet misslyckades.")
+                continue
+
+            # Försök tolka värdet
+            try:
+                nuvarande_pris = float(res_eod.json() or 0)
+            except Exception:
+                # Om filter inte returnerar en ren float direkt utan struktur
+                data = res_eod.json()
+                if isinstance(data, list) and len(data) > 0:
+                    nuvarande_pris = float(data[-1].get("close", 0) or 0)
+                elif isinstance(data, dict):
+                    nuvarande_pris = float(data.get("close", 0) or data.get("last_close", 0) or 0)
+                else:
+                    nuvarande_pris = 0.0
+
+            print(f"  - Tolkat Pris: {nuvarande_pris}")
 
             if nuvarande_pris <= 0:
                 print("  -> Hoppar över: Inget giltigt pris hittades")
                 continue
 
-            # 2. Hämta fundamenta för namn, sektor och analyst target price
+            # Hämta fundamenta för namn och sektor
             url_fund = f"https://eodhd.com/api/fundamentals/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
             res_fund = requests.get(url_fund)
             
@@ -72,8 +86,7 @@ def kör_us500_test():
                 target = 0.0
                 potential = 0.0
 
-            # 3. Spara direkt till Supabase
-            print(f"  -> Sparar till Supabase: {ticker} ({namn}), Pris: {nuvarande_pris}, Target: {target}")
+            print(f"  -> Sparar till Supabase: {ticker} ({namn}), Pris: {nuvarande_pris}")
             supabase.table("analyser_eod").upsert({
                 "ticker": ticker,
                 "nuvarande": nuvarande_pris,
@@ -93,7 +106,7 @@ def kör_us500_test():
         except Exception as sub_e:
             print(f"  -> FEL vid bearbetning av {ticker}: {sub_e}")
 
-    print(f"\n--- US-test klart! Totalt sparade rader i Supabase: {sparade} ---")
+    print(f"\n--- Test klart! Totalt sparade rader i Supabase: {sparade} ---")
 
 
 if __name__ == "__main__":
