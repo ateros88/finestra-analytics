@@ -10,136 +10,56 @@ load_dotenv()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 
-
-def uppdatera_sektor_historik_eod():
-    """Hämtar historisk dagsdata för marknadsindex via EODHD och sparar i Supabase."""
-    print("--- Startar historisk sektor-uppdatering via EODHD ---")
+def kör_us500_test():
+    print("--- Startar fokuserat US-test via EODHD ---")
 
     if not EODHD_API_KEY:
         print("FEL: EODHD_API_KEY saknas i miljövariabler.")
         return
 
-    index_tickers = ["GSPC.INDX", "IXIC.INDX", "STOXX50E.INDX"]
-    poster_att_spara = []
-
-    for ticker in index_tickers:
-        try:
-            url = f"https://eodhd.com/api/eod/{ticker}?api_token={EODHD_API_KEY}&fmt=json&period=d"
-            response = requests.get(url)
-
-            if response.status_code != 200:
-                print(f"Kunde inte hämta historik för {ticker}. Statuskod: {response.status_code}")
-                continue
-
-            history_data = response.json()
-            if not isinstance(history_data, list):
-                continue
-
-            for row in history_data:
-                datum_str = row.get("date")
-                pris = row.get("adjusted_close") or row.get("close")
-
-                if not datum_str or not pris:
-                    continue
-
-                poster_att_spara.append({
-                    "datum": datum_str,
-                    "ticker": ticker.replace(".INDX", ""),
-                    "pris": float(pris)
-                })
-
-            print(f"Hämtade {len(history_data)} punkter för {ticker}")
-            time.sleep(0.2)
-
-        except Exception as sub_e:
-            print(f"Kunde inte bearbeta index {ticker}: {sub_e}")
-
-    if poster_att_spara:
-        batch_storlek = 500
-        for i in range(0, len(poster_att_spara), batch_storlek):
-            batch = poster_att_spara[i:i + batch_storlek]
-            supabase.table("sektor_historik").upsert(
-                batch, on_conflict="datum,ticker"
-            ).execute()
-        print(f"Sparade totalt {len(poster_att_spara)} rader i 'sektor_historik'.")
-
-    print("--- Sektor-uppdatering klar ---")
-
-
-def hamta_tickers_fran_bors(exchange_code):
-    """Hämtar aktiva vanliga aktier från EODHD för en specifik börs."""
+    # Hämtar endast från US-börsen med common_stock för att hålla det relevant
+    exchange_code = "US"
     url = f"https://eodhd.com/api/exchange-symbol-list/{exchange_code}?api_token={EODHD_API_KEY}&fmt=json&type=common_stock"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        tickers = []
-        for item in data:
-            code = item.get("Code")
-            exchange = item.get("Exchange")
-            if code and exchange:
-                tickers.append(f"{code}.{exchange}")
-        return tickers
-    else:
-        print(f"Kunde inte hämta ticker-lista för {exchange_code}. Statuskod: {response.status_code}")
-        return []
-
-
-def kör_eod_analys():
-    """Hämtar marknader/tickers dynamiskt och sparar/uppdaterar 'analyser_eod'."""
-    print("--- Startar dynamisk EODHD aktieanalys & uppdatering ---")
-
-    if not EODHD_API_KEY:
-        print("FEL: EODHD_API_KEY saknas i miljövariabler.")
-        return
-
-    # Uppdaterade och korrekta börskoder för Norden, Europa, USA och Kanada (gruvbolag)
-    borser = [
-        "ST",      # Sverige (Stockholm)
-        "HE",      # Finland (Helsingfors)
-        "CO",      # Danmark (Köpenhamn)
-        "OL",      # Norge (Oslo)
-        "XETRA",   # Tyskland
-        "PA",      # Frankrike (Paris)
-        "LSE",     # Storbritannien (London)
-        "US",      # USA
-        "TO"       # Kanada (Toronto - gruvbolag)
-    ]
     
-    alla_tickers_raw = []
-
-    for bors in borser:
-        print(f"Hämtar tickers för börs: {bors}...")
-        tickers = hamta_tickers_fran_bors(bors)
-        print(f"Hittade {len(tickers)} st för {bors}")
-        alla_tickers_raw.extend(tickers)
-
-    # Rensa dubbletter om ett bolag finns på flera ställen
-    alla_tickers = list(set(alla_tickers_raw))
-
-    if not alla_tickers:
-        print("Inga tickers hittades från börserna.")
+    print(f"Hämtar ticker-lista för {exchange_code}...")
+    response = requests.get(url)
+    
+    if response.status_code != 200:
+        print(f"Kunde inte hämta ticker-lista för {exchange_code}. Statuskod: {response.status_code}")
         return
 
-    print(f"Totalt {len(alla_tickers)} unika tickers att bearbeta. Startar analys...")
-    nu_tid = datetime.now().isoformat()
+    data = response.json()
+    tickers = []
+    for item in data:
+        code = item.get("Code")
+        exchange = item.get("Exchange")
+        if code and exchange:
+            tickers.append(f"{code}.{exchange}")
 
-    for raw_ticker in alla_tickers:
+    print(f"Hittade {len(tickers)} st aktier för US. Bearbetar en begränsad test-batch (t.ex. de första 100 för att verifiera)...")
+    
+    # Vi begränsar till 100 st under testet för att inte slösa onödiga anrop innan vi ser att databasen fylls
+    test_batch = tickers[:100]
+    nu_tid = datetime.now().isoformat()
+    sparade = 0
+
+    for raw_ticker in test_batch:
         ticker = str(raw_ticker).strip().upper()
 
         try:
-            url = f"https://eodhd.com/api/fundamentals/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
-            response = requests.get(url)
+            url_fund = f"https://eodhd.com/api/fundamentals/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
+            res_fund = requests.get(url_fund)
 
-            if response.status_code != 200:
+            if res_fund.status_code != 200:
                 continue
 
-            data = response.json()
-            if not data or "General" not in data:
+            fund_data = res_fund.json()
+            if not fund_data or "General" not in fund_data:
                 continue
 
-            general = data.get("General", {})
-            highlights = data.get("Highlights", {})
-            analyst_ratings = data.get("AnalystRatings", {})
+            general = fund_data.get("General", {})
+            highlights = fund_data.get("Highlights", {})
+            analyst_ratings = fund_data.get("AnalystRatings", {})
 
             nuvarande_pris = float(highlights.get("LatestPrice", 0) or 0)
             
@@ -160,7 +80,7 @@ def kör_eod_analys():
 
             namn = general.get("Name", ticker)
             sektor = general.get("Sector", "Okänd")
-            valuta = general.get("Currency", "SEK")
+            valuta = general.get("Currency", "USD")
 
             if target > 0 and nuvarande_pris > 0:
                 potential = round(((target - nuvarande_pris) / nuvarande_pris) * 100, 2)
@@ -168,6 +88,7 @@ def kör_eod_analys():
                 target = 0.0
                 potential = 0.0
 
+            # Spara direkt till Supabase
             supabase.table("analyser_eod").upsert({
                 "ticker": ticker,
                 "nuvarande": nuvarande_pris,
@@ -180,15 +101,15 @@ def kör_eod_analys():
                 "senast_uppdaterad": nu_tid,
             }, on_conflict="ticker").execute()
 
-            print(f"Sparade/Uppdaterade {ticker} ({namn}): Kurs {nuvarande_pris:.2f}")
+            sparade += 1
+            print(f"Sparat [{sparade}]: {ticker} ({namn}) - Kurs: {nuvarande_pris}")
             time.sleep(0.1)
 
         except Exception as sub_e:
-            print(f"Kunde inte bearbeta aktie {ticker}: {sub_e}")
+            print(f"Kunde inte bearbeta {ticker}: {sub_e}")
 
-    print("--- EODHD aktieanalys klar ---")
+    print(f"--- US-test klart! Totalt sparade rader i Supabase: {sparade} ---")
 
 
 if __name__ == "__main__":
-    uppdatera_sektor_historik_eod()
-    kör_eod_analys()
+    kör_us500_test()
