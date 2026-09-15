@@ -23,29 +23,61 @@ def hamta_valuta_fran_suffix(symbol: str) -> str:
     return "USD"
 
 def hamta_alla_tickers() -> list[str]:
-    """Hämtar dynamiskt aktier från EODHD för Sverige samt officiella index för övriga länder."""
+    """Hämtar dynamiskt aktier via EODHD Exchange API för alla europeiska marknader samt S&P 500 för USA."""
     print("-> Hämtar globala aktielistor från nätet...")
     tickers = set()
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-    # 1. SVERIGE (Nasdaq Stockholm via EODHD Exchange Symbol List)
-    if EODHD_API_KEY:
+    if not EODHD_API_KEY:
+        print("FEL: EODHD_API_KEY saknas.")
+        return []
+
+    # Mappning för EODHD Exchange Codes
+    # ST = Sverige, OL = Norge, CO = Danmark, HE = Finland, LSE = UK, PA = Frankrike, F = Tyskland
+    marknader = [
+        ("SE", "ST", "Nasdaq Stockholm"),
+        ("NO", "OL", "Oslo Børs"),
+        ("DK", "CO", "Nasdaq Copenhagen"),
+        ("FI", "HE", "Nasdaq Helsinki"),
+        ("UK", "LSE", "London Stock Exchange"),
+        ("FR", "PA", "Euronext Paris"),
+        ("DE", "F", "Deutsche Börse Frankfurt")
+    ]
+
+    # 1. EUROPEISKA MARKNADER (Via EODHD Exchange Symbol List)
+    for land, code, namn in marknader:
         try:
-            url_st = f"https://eodhd.com/api/exchange-symbol-list/ST?api_token={EODHD_API_KEY}&fmt=json"
-            res = requests.get(url_st, timeout=15)
+            url = f"https://eodhd.com/api/exchange-symbol-list/{code}?api_token={EODHD_API_KEY}&fmt=json"
+            res = requests.get(url, timeout=15)
             if res.status_code == 200:
                 data = res.json()
-                se_count = 0
+                count = 0
                 for item in data:
                     asset_type = str(item.get("Type", "")).lower()
                     if asset_type in ["common stock", "stock"]:
-                        code = item.get("Code", "")
-                        if code:
-                            tickers.add(f"{code}.ST")
-                            se_count += 1
-                print(f"   [SE] Hämtade {se_count} aktier från Nasdaq Stockholm via EODHD API")
+                        ticker_code = item.get("Code", "")
+                        if ticker_code:
+                            # EODHD använder .US, .ST, .OL osv.
+                            suffix = ".L" if code == "LSE" else f".{code}"
+                            if code == "ST": suffix = ".ST"
+                            tickers.add(f"{ticker_code}{suffix}")
+                            count += 1
+                print(f"   [{land}] Hämtade {count} aktier från {namn} via EODHD API")
         except Exception as e:
-            print(f"   [SE] Fel vid EODHD-hämtning för Sverige: {e}")
+            print(f"   [{land}] Fel vid EODHD-hämtning för {namn}: {e}")
+
+    # 2. USA (S&P 500 via Wikipedia för att filtrera bort 50 000+ penny stocks)
+    try:
+        res = requests.get("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", headers=headers, timeout=15)
+        if res.status_code == 200:
+            df = pd.read_html(io.StringIO(res.text))[0]
+            sp = df["Symbol"].astype(str).str.replace(".", "-", regex=False) + ".US"
+            tickers.update(sp.tolist())
+            print(f"   [USA] Hämtade {len(sp)} bolag från S&P 500")
+    except Exception as e:
+        print(f"   [USA] Fel vid hämtning av S&P 500: {e}")
+
+    return sorted(list(tickers))
 
     # 2. USA (S&P 500)
     try:
@@ -204,9 +236,12 @@ def kor_global_pipeline():
             target = 0.0
             antal_koprek = 0
 
-            # 2. Hämta Fundamenta & Target Price från EODHD
+           # 2. Hämta Fundamenta & Target Price från EODHD
             url_fund = f"https://eodhd.com/api/fundamentals/{eod_symbol}?api_token={EODHD_API_KEY}&fmt=json"
             res_fund = requests.get(url_fund, timeout=10)
+
+            # Sätt grundvaluta baserat på suffix (.US = USD, .ST = SEK, etc.)
+            valuta = hamta_valuta_fran_suffix(eod_symbol)
 
             if res_fund.status_code == 200:
                 fund_data = res_fund.json()
@@ -217,8 +252,9 @@ def kor_global_pipeline():
                     namn = general.get("Name", yahoo_symbol)
                     sektor = general.get("Sector", "Okänd")
 
+                    # Lås .US till USD för att förhindra att EODHD skriver över med SEK vid sekundärnoteringar
                     eod_valuta = general.get("CurrencyCode", "") or general.get("Currency", "")
-                    if eod_valuta:
+                    if eod_valuta and not eod_symbol.endswith(".US"):
                         valuta = eod_valuta
 
                     target = float(analyst_ratings.get("TargetPrice", 0) or 0)
@@ -226,6 +262,16 @@ def kor_global_pipeline():
                     strong_buy = int(analyst_ratings.get("StrongBuy", 0) or 0)
                     buy = int(analyst_ratings.get("Buy", 0) or 0)
                     antal_koprek = strong_buy + buy
+
+            # Rimlighetskontroll: Om EODHD-target är mer än 3x priset för US-aktier,
+            # hämta från Yahoo Finance istället för att undvika felaktiga valutakursmultiplar
+            if eod_symbol.endswith(".US") and target > (nuvarande_pris * 3):
+                try:
+                    yf_target = float(ticker_yf.info.get("targetMeanPrice", 0) or 0)
+                    if yf_target > 0:
+                        target = yf_target
+                except Exception:
+                    pass
 
             # 3. Fallback till Yahoo Finance om information saknas från EODHD
             try:
