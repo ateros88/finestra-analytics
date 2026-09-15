@@ -13,6 +13,15 @@ load_dotenv()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 
+def hamta_valuta_fran_suffix(symbol):
+    """Bestämmer reservvaluta baserat på aktiens börssuffix om API saknar valuta."""
+    if symbol.endswith(".ST"): return "SEK"
+    if symbol.endswith(".OL"): return "NOK"
+    if symbol.endswith(".CO"): return "DKK"
+    if symbol.endswith(".HE") or symbol.endswith(".DE"): return "EUR"
+    if symbol.endswith(".L"): return "GBp"
+    return "USD"
+
 def hamta_alla_tickers():
     """Hämtar dynamiskt aktier från officiella index för USA, UK, Tyskland, Sverige, Norge, Danmark och Finland."""
     print("-> Hämtar globala aktielistor från nätet...")
@@ -37,7 +46,7 @@ def hamta_alla_tickers():
         if res.status_code == 200:
             tables = pd.read_html(io.StringIO(res.text))
             for df in tables:
-                col = next((c for c in df.columns if str(c).upper() in ["EPIC", "TICKER"]), None)
+                col = next((c for c in df.columns if str(c).upper() in ["EPIC", "TICKER", "HEADER"]), None)
                 if col:
                     ftse = df[col].astype(str).str.strip().apply(lambda x: f"{x}.L" if not x.endswith(".L") else x)
                     tickers.update(ftse.tolist())
@@ -53,26 +62,31 @@ def hamta_alla_tickers():
             if res.status_code == 200:
                 tables = pd.read_html(io.StringIO(res.text))
                 for df in tables:
-                    if "Ticker" in df.columns:
-                        de = df["Ticker"].astype(str).str.strip().apply(lambda x: x if "." in x else f"{x}.DE")
+                    col = next((c for c in df.columns if any(k in str(c).lower() for k in ["ticker", "symbol"])), None)
+                    if col:
+                        de = df[col].astype(str).str.strip().apply(lambda x: x if "." in x else f"{x}.DE")
                         tickers.update(de.tolist())
                         print(f"   [DE] Hämtade {len(de)} bolag från {label}")
                         break
         except Exception as e:
             print(f"   [DE] Fel vid hämtning av {label}: {e}")
 
-    # 4. SVERIGE (Nasdaq Stockholm Large & Mid Cap via Wikipedia)
+    # 4. SVERIGE (OMX Stockholm Large & Mid Cap)
     try:
         res = requests.get("https://sv.wikipedia.org/wiki/Nasdaq_Stockholm", headers=headers)
         if res.status_code == 200:
             tables = pd.read_html(io.StringIO(res.text))
             se_count = 0
             for df in tables:
-                col = next((c for c in df.columns if any(k in str(c).lower() for k in ["kortnamn", "ticker", "symbol"])), None)
-                if col:
-                    se_list = df[col].astype(str).str.strip().apply(lambda x: f"{x}.ST" if not x.endswith(".ST") else x)
-                    tickers.update(se_list.tolist())
-                    se_count += len(se_list)
+                # Söker bredare efter alla tänkbara kolumnnamn för kortnamn/ticker på svenska Wikipedia
+                col = next((c for c in df.columns if any(k in str(c).lower() for k in ["kortnamn", "ticker", "symbol", "bolag"])), None)
+                if col and len(df) > 5:
+                    # Om kolumnen innehöll bolagsnamn istället för ticker, hoppa över till nästa
+                    sample_val = str(df[col].iloc[0])
+                    if len(sample_val) < 15 and not " " in sample_val.strip():
+                        se_list = df[col].astype(str).str.strip().apply(lambda x: f"{x}.ST" if not x.endswith(".ST") else x)
+                        tickers.update(se_list.tolist())
+                        se_count += len(se_list)
             print(f"   [SE] Hämtade {se_count} bolag från Stockholm Large/Mid Cap")
     except Exception as e:
         print(f"   [SE] Fel vid hämtning: {e}")
@@ -83,7 +97,7 @@ def hamta_alla_tickers():
         if res.status_code == 200:
             tables = pd.read_html(io.StringIO(res.text))
             for df in tables:
-                col = next((c for c in df.columns if str(c).upper() in ["TICKER", "SYMBOL"]), None)
+                col = next((c for c in df.columns if any(k in str(c).lower() for k in ["ticker", "symbol", "code"])), None)
                 if col:
                     obx = df[col].astype(str).str.strip().apply(lambda x: f"{x}.OL" if not x.endswith(".OL") else x)
                     tickers.update(obx.tolist())
@@ -98,7 +112,7 @@ def hamta_alla_tickers():
         if res.status_code == 200:
             tables = pd.read_html(io.StringIO(res.text))
             for df in tables:
-                col = next((c for c in df.columns if str(c).upper() in ["TICKER", "SYMBOL"]), None)
+                col = next((c for c in df.columns if any(k in str(c).lower() for k in ["ticker", "symbol", "code"])), None)
                 if col:
                     c25 = df[col].astype(str).str.strip().apply(lambda x: f"{x}.CO" if not x.endswith(".CO") else x)
                     tickers.update(c25.tolist())
@@ -113,8 +127,9 @@ def hamta_alla_tickers():
         if res.status_code == 200:
             tables = pd.read_html(io.StringIO(res.text))
             for df in tables:
-                if "Ticker" in df.columns:
-                    h25 = df["Ticker"].astype(str).str.strip().apply(lambda x: f"{x}.HE" if not x.endswith(".HE") else x)
+                col = next((c for c in df.columns if any(k in str(c).lower() for k in ["ticker", "symbol", "code"])), None)
+                if col:
+                    h25 = df[col].astype(str).str.strip().apply(lambda x: f"{x}.HE" if not x.endswith(".HE") else x)
                     tickers.update(h25.tolist())
                     print(f"   [FI] Hämtade {len(h25)} bolag från OMXH25")
                     break
@@ -139,17 +154,16 @@ def kör_global_pipeline():
     BATCH_SIZE = 50
 
     for i, symbol in enumerate(raw_tickers, 1):
-        # Dynamisk formatkonvertering för olika börser
         eod_symbol = symbol
         
-        # Yahoo Finance kräver ren symbol för USA (t.ex. AAPL), men behåller suffix för Europa (.ST, .DE, .L, etc.)
+        # Yahoo Finance kräver ren symbol för USA (t.ex. AAPL), men behåller suffix för Europa (.ST, .DE, .L etc.)
         if symbol.endswith(".US"):
             yahoo_symbol = symbol.replace(".US", "")
         else:
             yahoo_symbol = symbol
 
         try:
-            # 1. Hämta exakt ojusterad slutkurs via Yahoo Finance fast_info
+            # 1. Hämta pris via Yahoo Finance fast_info
             ticker_yf = yf.Ticker(yahoo_symbol)
             nuvarande_pris = 0.0
 
@@ -159,7 +173,6 @@ def kör_global_pipeline():
             except Exception:
                 pass
 
-            # Fallback till history om fast_info saknar data
             if nuvarande_pris <= 0:
                 try:
                     hist = ticker_yf.history(period="1d", auto_adjust=False)
@@ -172,13 +185,14 @@ def kör_global_pipeline():
                 print(f"[{i}/{len(raw_tickers)}] Hoppar över {eod_symbol}: Inget giltigt pris från Yahoo Finance.")
                 continue
 
-            # 2. Hämta Fundamenta & Target Price från EODHD
+            # Default-värden med säkerställd valuta utifrån börssuffix
             namn = yahoo_symbol
             sektor = "Okänd"
-            valuta = "USD"
+            valuta = hamta_valuta_fran_suffix(eod_symbol)
             target = 0.0
             antal_koprek = 0
 
+            # 2. Hämta Fundamenta & Target Price från EODHD
             url_fund = f"https://eodhd.com/api/fundamentals/{eod_symbol}?api_token={EODHD_API_KEY}&fmt=json"
             res_fund = requests.get(url_fund)
 
@@ -190,25 +204,34 @@ def kör_global_pipeline():
 
                     namn = general.get("Name", yahoo_symbol)
                     sektor = general.get("Sector", "Okänd")
-                    valuta = general.get("Currency", "USD")
+                    
+                    eod_valuta = general.get("CurrencyCode", "") or general.get("Currency", "")
+                    if eod_valuta:
+                        valuta = eod_valuta
+
                     target = float(analyst_ratings.get("TargetPrice", 0) or 0)
 
                     strong_buy = int(analyst_ratings.get("StrongBuy", 0) or 0)
                     buy = int(analyst_ratings.get("Buy", 0) or 0)
                     antal_koprek = strong_buy + buy
 
-            # Fallback till Yahoo Info om EODHD saknar data
-            if target == 0.0 or namn == yahoo_symbol:
-                try:
-                    yf_info = ticker_yf.info
-                    if target == 0.0:
-                        target = float(yf_info.get("targetMeanPrice", 0) or 0)
-                    if namn == yahoo_symbol:
-                        namn = yf_info.get("shortName", yahoo_symbol)
-                        sektor = yf_info.get("sector", sektor)
-                        valuta = yf_info.get("currency", valuta)
-                except Exception:
-                    pass
+            # 3. Fallback till Yahoo Info om EODHD saknar data / köprekommendationer (viktigt för EU-aktier!)
+            try:
+                yf_info = ticker_yf.info
+                if target == 0.0:
+                    target = float(yf_info.get("targetMeanPrice", 0) or 0)
+                if namn == yahoo_symbol:
+                    namn = yf_info.get("shortName", yahoo_symbol)
+                    sektor = yf_info.get("sector", sektor)
+                
+                # Om EODHD inte gav några köprekommendationer (vanligt på EU-aktier), hämta från Yahoo
+                if antal_koprek == 0:
+                    num_analysts = int(yf_info.get("numberOfAnalystOpinions", 0) or 0)
+                    rec_key = str(yf_info.get("recommendationKey", "")).lower()
+                    if rec_key in ["buy", "strong_buy"]:
+                        antal_koprek = num_analysts if num_analysts > 0 else 1
+            except Exception:
+                pass
 
             potential = round(((target - nuvarande_pris) / nuvarande_pris) * 100, 2) if (target > 0 and nuvarande_pris > 0) else 0.0
 
@@ -225,7 +248,7 @@ def kör_global_pipeline():
                 "senast_uppdaterad": nu_tid,
             })
 
-            print(f"[{i}/{len(raw_tickers)}] {eod_symbol} ({namn}) | Pris: {nuvarande_pris:.2f} {valuta} | Target: {target:.2f} | Potential: {potential}%")
+            print(f"[{i}/{len(raw_tickers)}] {eod_symbol} ({namn}) | Pris: {nuvarande_pris:.2f} {valuta} | Target: {target:.2f} | Potential: {potential}% | Köprek: {antal_koprek}")
 
             # Sänd till Supabase i grupper om 50
             if len(batch_buffer) >= BATCH_SIZE:
