@@ -154,28 +154,29 @@ def kör_global_pipeline():
     for i, symbol in enumerate(raw_tickers, 1):
         eod_symbol = symbol
         
-        # Yahoo Finance kräver ren symbol för USA (t.ex. AAPL), men behåller suffix för Europa (.ST, .DE, .L etc.)
         if symbol.endswith(".US"):
             yahoo_symbol = symbol.replace(".US", "")
         else:
             yahoo_symbol = symbol
 
         try:
-            # 1. Hämta pris via Yahoo Finance fast_info
+            # 1. Hämta pris med strict split-justering via yfinance history istället för enbart fast_info
             ticker_yf = yf.Ticker(yahoo_symbol)
             nuvarande_pris = 0.0
 
             try:
-                fast_info = ticker_yf.fast_info
-                nuvarande_pris = float(fast_info.get("lastPrice", 0) or fast_info.get("previousClose", 0) or 0)
+                # Använd auto_adjust=True för att säkert få split- och utdelningsjusterade priser
+                hist = ticker_yf.history(period="5d", auto_adjust=True)
+                if not hist.empty:
+                    nuvarande_pris = float(hist["Close"].iloc[-1])
             except Exception:
                 pass
 
+            # Fallback till fast_info om history misslyckas
             if nuvarande_pris <= 0:
                 try:
-                    hist = ticker_yf.history(period="1d", auto_adjust=False)
-                    if not hist.empty:
-                        nuvarande_pris = float(hist["Close"].iloc[-1])
+                    fast_info = ticker_yf.fast_info
+                    nuvarande_pris = float(fast_info.get("lastPrice", 0) or fast_info.get("previousClose", 0) or 0)
                 except Exception:
                     pass
 
@@ -183,7 +184,6 @@ def kör_global_pipeline():
                 print(f"[{i}/{len(raw_tickers)}] Hoppar över {eod_symbol}: Inget giltigt pris från Yahoo Finance.")
                 continue
 
-            # Default-värden med säkerställd valuta utifrån börssuffix
             namn = yahoo_symbol
             sektor = "Okänd"
             valuta = hamta_valuta_fran_suffix(eod_symbol)
@@ -213,7 +213,7 @@ def kör_global_pipeline():
                     buy = int(analyst_ratings.get("Buy", 0) or 0)
                     antal_koprek = strong_buy + buy
 
-            # 3. Fallback till Yahoo Info om EODHD saknar data / köprekommendationer
+            # 3. Fallback till Yahoo Info om EODHD saknar data
             try:
                 yf_info = ticker_yf.info
                 if target == 0.0:
@@ -230,7 +230,7 @@ def kör_global_pipeline():
             except Exception:
                 pass
 
-            # OMVANDLING: Omräkning från pence (GBp / GBX) till pund (GBP / £) för brittiska aktier (.L)
+            # Omvandling från pence till pund för UK
             if eod_symbol.endswith(".L") or valuta in ["GBp", "GBX"]:
                 nuvarande_pris = nuvarande_pris / 100.0
                 target = target / 100.0
@@ -238,7 +238,6 @@ def kör_global_pipeline():
 
             potential = round(((target - nuvarande_pris) / nuvarande_pris) * 100, 2) if (target > 0 and nuvarande_pris > 0) else 0.0
 
-            # Lägg till i batch
             batch_buffer.append({
                 "ticker": eod_symbol,
                 "nuvarande": round(nuvarande_pris, 2),
@@ -253,7 +252,6 @@ def kör_global_pipeline():
 
             print(f"[{i}/{len(raw_tickers)}] {eod_symbol} ({namn}) | Pris: {nuvarande_pris:.2f} {valuta} | Target: {target:.2f} | Potential: {potential}% | Köprek: {antal_koprek}")
 
-            # Sänd till Supabase i grupper om 50
             if len(batch_buffer) >= BATCH_SIZE:
                 supabase.table("analyser_eod").upsert(batch_buffer, on_conflict="ticker").execute()
                 totalt_sparade += len(batch_buffer)
@@ -265,7 +263,6 @@ def kör_global_pipeline():
         except Exception as e:
             print(f"[{i}/{len(raw_tickers)}] FEL vid bearbetning av {eod_symbol}: {e}")
 
-    # Sänd sista batchen om det finns kvarvarande rader
     if batch_buffer:
         supabase.table("analyser_eod").upsert(batch_buffer, on_conflict="ticker").execute()
         totalt_sparade += len(batch_buffer)
