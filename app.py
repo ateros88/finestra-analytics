@@ -488,6 +488,9 @@ with tabs[2]:
     col1, col2, col3 = st.columns(3)
 
     with col1:
+        # Osynlig "utfyllnad" för att matcha badgen på Master-kolumnen
+        st.markdown("<div style='height: 29px; margin-bottom: 8px;'></div>", unsafe_allow_html=True)
+        
         st.markdown("""
             ### Insight
             *Håll koll på marknadens topp-aktier.*
@@ -502,6 +505,9 @@ with tabs[2]:
             st.rerun()
 
     with col2:
+        # Osynlig "utfyllnad" här med
+        st.markdown("<div style='height: 29px; margin-bottom: 8px;'></div>", unsafe_allow_html=True)
+        
         st.markdown("""
             ### Advance
             *För den seriösa aktieinvesteraren.*
@@ -537,7 +543,6 @@ with tabs[2]:
             **Pris: 99 kr/mån**
             """)
         
-        # Lyft fram mervärdet med 20 kr-skillnaden
         st.caption("✨ Endast +20 kr/mån jämfört med Advance – få tillgång till råvaror & krypto direkt.")
 
         if st.button("Välj Master"):
