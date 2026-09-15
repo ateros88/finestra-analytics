@@ -1,4 +1,5 @@
 from datetime import datetime
+import io
 import os
 import time
 from dotenv import load_dotenv
@@ -13,18 +14,25 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 
 def hämta_us500_tickers():
-    """Hämtar den aktuella listan på alla S&P 500-bolag."""
+    """Hämtar den aktuella listan på alla S&P 500-bolag från Wikipedia."""
     print("-> Hämtar US500 (S&P 500) aktielista...")
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        tables = pd.read_html(url)
-        df = tables[0]
-        tickers = df['Symbol'].tolist()
-        print(f"-> Hittade {len(tickers)} bolag i S&P 500.")
-        return tickers
+        # Custom User-Agent header för att undvika HTTP 403 Forbidden
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        res = requests.get(url, headers=headers)
+        
+        if res.status_code == 200:
+            tables = pd.read_html(io.StringIO(res.text))
+            df = tables[0]
+            tickers = df['Symbol'].tolist()
+            print(f"-> Hittade {len(tickers)} bolag i S&P 500.")
+            return tickers
+        else:
+            raise Exception(f"HTTP Status {res.status_code}")
+            
     except Exception as e:
         print(f"FEL vid hämtning av S&P 500-lista: {e}")
-        # Reservlista om Wikipedia-hämtning mot förmodan skulle misslyckas
         return ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "BRK.B", "JNJ", "V"]
 
 def kör_us500_pipeline():
@@ -59,7 +67,7 @@ def kör_us500_pipeline():
             except Exception:
                 pass
 
-            # Fallback till history om fast_info var tom
+            # Fallback till history om fast_info saknar data
             if nuvarande_pris <= 0:
                 try:
                     hist = ticker_yf.history(period="1d", auto_adjust=False)
@@ -97,7 +105,7 @@ def kör_us500_pipeline():
                     buy = int(analyst_ratings.get("Buy", 0) or 0)
                     antal_koprek = strong_buy + buy
 
-            # Fallback till Yahoo Info om EODHD saknade riktkurs/namn
+            # Fallback till Yahoo Info om EODHD saknar data
             if target == 0.0 or namn == yahoo_symbol:
                 try:
                     yf_info = ticker_yf.info
@@ -126,20 +134,19 @@ def kör_us500_pipeline():
 
             print(f"[{i}/{len(raw_tickers)}] {eod_symbol} ({namn}) | Pris: {nuvarande_pris:.2f} | Target: {target:.2f} | Potential: {potential}%")
 
-            # Sänd till Supabase i grupper om 50 (Batching)
+            # Sänd till Supabase i grupper om 50
             if len(batch_buffer) >= BATCH_SIZE:
                 supabase.table("analyser_eod").upsert(batch_buffer, on_conflict="ticker").execute()
                 totalt_sparade += len(batch_buffer)
                 print(f"---> [SUPABASE] Sparade batch om {len(batch_buffer)} bolag! (Totalt sparade: {totalt_sparade})")
                 batch_buffer = []
 
-            # Liten paus för att undvika överbelastning
             time.sleep(0.05)
 
         except Exception as e:
             print(f"[{i}/{len(raw_tickers)}] FEL vid bearbetning av {eod_symbol}: {e}")
 
-    # Sänd sista slatt-batchen om det finns kvar i bufferten
+    # Sänd sista batchen om det finns kvarvarande rader
     if batch_buffer:
         supabase.table("analyser_eod").upsert(batch_buffer, on_conflict="ticker").execute()
         totalt_sparade += len(batch_buffer)
