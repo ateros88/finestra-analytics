@@ -11,13 +11,12 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 
 def kör_us500_test():
-    print("--- Startar fokuserat US-test via EODHD ---")
+    print("--- Startar fokuserat US-test med felsökning ---")
 
     if not EODHD_API_KEY:
         print("FEL: EODHD_API_KEY saknas i miljövariabler.")
         return
 
-    # Hämtar endast från US-börsen med common_stock för att hålla det relevant
     exchange_code = "US"
     url = f"https://eodhd.com/api/exchange-symbol-list/{exchange_code}?api_token={EODHD_API_KEY}&fmt=json&type=common_stock"
     
@@ -36,25 +35,29 @@ def kör_us500_test():
         if code and exchange:
             tickers.append(f"{code}.{exchange}")
 
-    print(f"Hittade {len(tickers)} st aktier för US. Bearbetar en begränsad test-batch (t.ex. de första 100 för att verifiera)...")
+    print(f"Hittade {len(tickers)} st aktier för US. Testar de första 5 st...")
     
-    # Vi begränsar till 100 st under testet för att inte slösa onödiga anrop innan vi ser att databasen fylls
-    test_batch = tickers[:100]
+    # Vi testar bara de första 5 för att se exakt vad som händer i API-svaret
+    test_batch = tickers[:5]
     nu_tid = datetime.now().isoformat()
     sparade = 0
 
     for raw_ticker in test_batch:
         ticker = str(raw_ticker).strip().upper()
+        print(f"\nUndersöker ticker: {ticker}")
 
         try:
             url_fund = f"https://eodhd.com/api/fundamentals/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
             res_fund = requests.get(url_fund)
+            print(f"  - Fundamentals statuskod: {res_fund.status_code}")
 
             if res_fund.status_code != 200:
+                print(f"  -> Hoppar över p.g.a. statuskod {res_fund.status_code}")
                 continue
 
             fund_data = res_fund.json()
             if not fund_data or "General" not in fund_data:
+                print("  -> Hoppar över: Saknar 'General' i data")
                 continue
 
             general = fund_data.get("General", {})
@@ -62,15 +65,19 @@ def kör_us500_test():
             analyst_ratings = fund_data.get("AnalystRatings", {})
 
             nuvarande_pris = float(highlights.get("LatestPrice", 0) or 0)
+            print(f"  - LatestPrice från highlights: {nuvarande_pris}")
             
             if nuvarande_pris <= 0:
                 rt_url = f"https://eodhd.com/api/real-time/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
                 rt_res = requests.get(rt_url)
+                print(f"  - Real-time statuskod: {rt_res.status_code}")
                 if rt_res.status_code == 200:
                     rt_data = rt_res.json()
                     nuvarande_pris = float(rt_data.get("close", 0) or 0)
+                    print(f"  - Pris från real-time: {nuvarande_pris}")
 
             if nuvarande_pris <= 0:
+                print("  -> Hoppar över: Priset är fortfarande 0")
                 continue
 
             target = float(analyst_ratings.get("TargetPrice", 0) or 0)
@@ -88,7 +95,8 @@ def kör_us500_test():
                 target = 0.0
                 potential = 0.0
 
-            # Spara direkt till Supabase
+            # Försök spara till Supabase
+            print(f"  -> Sparar till Supabase: {ticker} ({namn}), Pris: {nuvarande_pris}")
             supabase.table("analyser_eod").upsert({
                 "ticker": ticker,
                 "nuvarande": nuvarande_pris,
@@ -102,13 +110,13 @@ def kör_us500_test():
             }, on_conflict="ticker").execute()
 
             sparade += 1
-            print(f"Sparat [{sparade}]: {ticker} ({namn}) - Kurs: {nuvarande_pris}")
+            print("  -> Sparat utan problem!")
             time.sleep(0.1)
 
         except Exception as sub_e:
-            print(f"Kunde inte bearbeta {ticker}: {sub_e}")
+            print(f"  -> FEL vid bearbetning av {ticker}: {sub_e}")
 
-    print(f"--- US-test klart! Totalt sparade rader i Supabase: {sparade} ---")
+    print(f"\n--- US-test klart! Totalt sparade rader i Supabase: {sparade} ---")
 
 
 if __name__ == "__main__":
