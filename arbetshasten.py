@@ -33,12 +33,10 @@ def uppdatera_sektor_historik_eod():
         "XLRE.US",
     ]
     
-    idag = datetime.now().strftime("%Y-%m-%d")
     poster_att_spara = []
 
     for ticker in etf_tickers:
         try:
-            # EODHD Endpoint för historisk dagsdata
             url = f"https://eodhd.com/api/eod/{ticker}?api_token={EODHD_API_KEY}&fmt=json&period=d"
             response = requests.get(url)
 
@@ -50,7 +48,6 @@ def uppdatera_sektor_historik_eod():
             if not isinstance(history_data, list):
                 continue
 
-            # Vi kan begränsa till t.ex. de senaste 5 åren eller ta alla som kommer
             for row in history_data:
                 datum_str = row.get("date")
                 pris = row.get("adjusted_close") or row.get("close")
@@ -60,7 +57,7 @@ def uppdatera_sektor_historik_eod():
 
                 poster_att_spara.append({
                     "datum": datum_str,
-                    "ticker": ticker.replace(".US", ""), # Sparar utan .US om din tabell vill ha det rent
+                    "ticker": ticker.replace(".US", ""),
                     "pris": float(pris)
                 })
 
@@ -84,103 +81,111 @@ def uppdatera_sektor_historik_eod():
     print("--- Sektor-uppdatering klar ---")
 
 
+def hamta_tickers_fran_bors(exchange_code):
+    """Hämtar alla aktiva tickers från EODHD för en viss börs (t.ex. SE, US, DE)."""
+    url = f"https://eodhd.com/api/exchange-symbol-list/{exchange_code}?api_token={EODHD_API_KEY}&fmt=json"
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        tickers = []
+        for item in data:
+            code = item.get("Code")
+            exchange = item.get("Exchange")
+            if code and exchange:
+                tickers.append(f"{code}.{exchange}")
+        return tickers
+    else:
+        print(f"Kunde inte hämta ticker-lista för {exchange_code}. Statuskod: {response.status_code}")
+        return []
+
+
 def kör_eod_analys():
-    """Hämtar kurser, målkurser och rekar från EODHD och uppdaterar 'analyser_eod'."""
-    print("--- Startar EODHD aktieanalys & uppdatering ---")
+    """Hämtar marknader/tickers dynamiskt från EODHD och sparar/uppdaterar 'analyser_eod'."""
+    print("--- Startar dynamisk EODHD aktieanalys & uppdatering ---")
 
     if not EODHD_API_KEY:
         print("FEL: EODHD_API_KEY saknas i miljövariablerna.")
         return
 
-    try:
-        response = supabase.table("analyser_eod").select("*").execute()
-        analyser = response.data
+    # Vilka börser vill du scanna? (Sverige, USA, Tyskland)
+    borser = ["SE", "US", "DE"]
+    alla_tickers = []
 
-        if not analyser:
-            print("Inga aktier hittades i 'analyser_eod'-tabellen.")
-            return
+    for bors in borser:
+        print(f"Hämtar tickers för börs: {bors}...")
+        tickers = hamta_tickers_fran_bors(bors)
+        alla_tickers.extend(tickers)
 
-        nu_tid = datetime.now().isoformat()
+    if not alla_tickers:
+        print("Inga tickers hittades från börserna.")
+        return
 
-        for row in analyser:
-            raw_ticker = row["ticker"]
-            if not raw_ticker:
+    print(f"Hittade totalt {len(alla_tickers)} tickers att bearbeta.")
+    nu_tid = datetime.now().isoformat()
+
+    for raw_ticker in alla_tickers:
+        ticker = str(raw_ticker).strip().upper()
+
+        try:
+            url = f"https://eodhd.com/api/fundamentals/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
+            response = requests.get(url)
+
+            if response.status_code != 200:
                 continue
-            ticker = str(raw_ticker).strip().upper()
 
-            try:
-                url = f"https://eodhd.com/api/fundamentals/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
-                response = requests.get(url)
+            data = response.json()
+            if not data or "General" not in data:
+                continue
 
-                if response.status_code != 200:
-                    print(f"Kunde inte hämta data för {ticker} från EODHD. Statuskod: {response.status_code}")
-                    continue
+            general = data.get("General", {})
+            highlights = data.get("Highlights", {})
+            analyst_ratings = data.get("AnalystRatings", {})
 
-                data = response.json()
-                if not data or "General" not in data:
-                    print(f"VARNING: Hittade ingen giltig data för {ticker} hos EODHD.")
-                    continue
+            nuvarande_pris = float(highlights.get("LatestPrice", 0) or 0)
+            
+            if nuvarande_pris <= 0:
+                rt_url = f"https://eodhd.com/api/real-time/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
+                rt_res = requests.get(rt_url)
+                if rt_res.status_code == 200:
+                    rt_data = rt_res.json()
+                    nuvarande_pris = float(rt_data.get("close", 0) or 0)
 
-                general = data.get("General", {})
-                highlights = data.get("Highlights", {})
-                analyst_ratings = data.get("AnalystRatings", {})
+            if nuvarande_pris <= 0:
+                continue
 
-                nuvarande_pris = float(highlights.get("LatestPrice", 0) or 0)
-                
-                if nuvarande_pris <= 0:
-                    rt_url = f"https://eodhd.com/api/real-time/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
-                    rt_res = requests.get(rt_url)
-                    if rt_res.status_code == 200:
-                        rt_data = rt_res.json()
-                        nuvarande_pris = float(rt_data.get("close", 0) or 0)
+            target = float(analyst_ratings.get("TargetPrice", 0) or 0)
+            strong_buy = int(analyst_ratings.get("StrongBuy", 0) or 0)
+            buy = int(analyst_ratings.get("Buy", 0) or 0)
+            antal_koprek = strong_buy + buy
 
-                if nuvarande_pris <= 0:
-                    print(f"Hittade inget giltigt pris för {ticker}.")
-                    continue
+            namn = general.get("Name", ticker)
+            sektor = general.get("Sector", "Okänd")
+            valuta = general.get("Currency", "SEK")
 
-                gammalt_pris = float(row.get("nuvarande", 0) or 0)
+            if target > 0 and nuvarande_pris > 0:
+                potential = round(((target - nuvarande_pris) / nuvarande_pris) * 100, 2)
+            else:
+                target = 0.0
+                potential = 0.0
 
-                # Sanity Check (40% spärren)
-                if gammalt_pris > 0:
-                    procentuell_forandring = (abs(nuvarande_pris - gammalt_pris) / gammalt_pris) * 100
-                    if procentuell_forandring > 40:
-                        print(f"STOPP: Extrem prisavvikelse för {ticker}! Gammalt: {gammalt_pris}, Nytt: {nuvarande_pris}. Blockerad.")
-                        continue
+            # Använder upsert för att skapa raden om den saknas eller uppdatera om den finns
+            supabase.table("analyser_eod").upsert({
+                "ticker": ticker,
+                "nuvarande": nuvarande_pris,
+                "target": target,
+                "potential": potential,
+                "antal_koprek": antal_koprek,
+                "name": namn,
+                "sektor": sektor,
+                "valuta": valuta,
+                "senast_uppdaterad": nu_tid,
+            }, on_conflict="ticker").execute()
 
-                target = float(analyst_ratings.get("TargetPrice", 0) or 0)
-                strong_buy = int(analyst_ratings.get("StrongBuy", 0) or 0)
-                buy = int(analyst_ratings.get("Buy", 0) or 0)
-                antal_koprek = strong_buy + buy
+            print(f"Sparade/Uppdaterade {ticker}: Kurs {nuvarande_pris:.2f}, Riktkurs {target:.2f}")
+            time.sleep(0.2)
 
-                namn = general.get("Name", row.get("name"))
-                sektor = general.get("Sector", row.get("sektor"))
-                valuta = general.get("Currency", row.get("valuta", "SEK"))
-
-                if target > 0 and nuvarande_pris > 0:
-                    potential = round(((target - nuvarande_pris) / nuvarande_pris) * 100, 2)
-                else:
-                    target = 0.0
-                    potential = 0.0
-
-                supabase.table("analyser_eod").update({
-                    "nuvarande": nuvarande_pris,
-                    "target": target,
-                    "potential": potential,
-                    "antal_koprek": antal_koprek,
-                    "name": namn,
-                    "sektor": sektor,
-                    "valuta": valuta,
-                    "senast_uppdaterad": nu_tid,
-                }).eq("ticker", ticker).execute()
-
-                print(f"Uppdaterade {ticker}: Kurs {nuvarande_pris:.2f}, Riktkurs {target:.2f}, Potential {potential:.1f}%, Köprekar: {antal_koprek}")
-                time.sleep(0.3)
-
-            except Exception as sub_e:
-                print(f"Kunde inte bearbeta aktie {ticker}: {sub_e}")
-
-    except Exception as e:
-        print(f"Fel vid hämtning från tabellen 'analyser_eod': {e}")
+        except Exception as sub_e:
+            print(f"Kunde inte bearbeta aktie {ticker}: {sub_e}")
 
     print("--- EODHD aktieanalys klar ---")
 
