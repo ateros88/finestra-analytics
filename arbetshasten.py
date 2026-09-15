@@ -3,100 +3,101 @@ import os
 import time
 from dotenv import load_dotenv
 from supabase import create_client
-import yfinance as yf
+import requests
 
 # Ladda miljövariabler
 load_dotenv()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 
 
-def uppdatera_sektor_historik():
-    """Hämtar historisk dagsdata (5 år) för sektor-ETF:erna och sparar/uppdaterar i Supabase."""
+def uppdatera_sektor_historik_eod():
+    """Hämtar historisk dagsdata (5 år) för sektor-ETF:er via EODHD och sparar i Supabase."""
+    print("--- Startar historisk sektor-uppdatering via EODHD ---")
+
+    if not EODHD_API_KEY:
+        print("FEL: EODHD_API_KEY saknas i miljövariabler.")
+        return
+
+    # Standardiserade ticker-format för ETF:er i USA hos EODHD (t.ex. XLK.US)
     etf_tickers = [
-        "XLK",
-        "XLF",
-        "XLV",
-        "XLY",
-        "XLP",
-        "XLI",
-        "XLE",
-        "XLU",
-        "XLB",
-        "XLRE",
+        "XLK.US",
+        "XLF.US",
+        "XLV.US",
+        "XLY.US",
+        "XLP.US",
+        "XLI.US",
+        "XLE.US",
+        "XLU.US",
+        "XLB.US",
+        "XLRE.US",
     ]
+    
     idag = datetime.now().strftime("%Y-%m-%d")
+    poster_att_spara = []
 
-    print(f"--- Startar historisk sektor-uppdatering: {idag} ---")
+    for ticker in etf_tickers:
+        try:
+            # EODHD Endpoint för historisk dagsdata
+            url = f"https://eodhd.com/api/eod/{ticker}?api_token={EODHD_API_KEY}&fmt=json&period=d"
+            response = requests.get(url)
 
-    try:
-        # Hämta 5 års historik för alla tickers på en gång
-        df_all = yf.download(
-            etf_tickers, period="5y", interval="1d", progress=False, group_by="ticker"
-        )
+            if response.status_code != 200:
+                print(f"Kunde inte hämta historik för sektor {ticker}. Statuskod: {response.status_code}")
+                continue
 
-        if df_all.empty:
-            print("Kunde inte hämta data från yfinance för sektorer.")
-            return
+            history_data = response.json()
+            if not isinstance(history_data, list):
+                continue
 
-        poster_att_spara = []
+            # Vi kan begränsa till t.ex. de senaste 5 åren eller ta alla som kommer
+            for row in history_data:
+                datum_str = row.get("date")
+                pris = row.get("adjusted_close") or row.get("close")
 
-        for t in etf_tickers:
-            try:
-                if len(etf_tickers) == 1:
-                    df_t = df_all.copy()
-                else:
-                    df_t = df_all[t].copy()
-
-                df_t = df_t.dropna(subset=["Close"])
-                if df_t.empty:
+                if not datum_str or not pris:
                     continue
 
-                # Loopa igenom varje dag i historiken
-                for datum_index, row in df_t.iterrows():
-                    datum_str = datum_index.strftime("%Y-%m-%d")
-                    pris = float(row["Close"])
+                poster_att_spara.append({
+                    "datum": datum_str,
+                    "ticker": ticker.replace(".US", ""), # Sparar utan .US om din tabell vill ha det rent
+                    "pris": float(pris)
+                })
 
-                    poster_att_spara.append({
-                        "datum": datum_str,
-                        "ticker": t,
-                        "pris": pris
-                    })
+            print(f"Hämtade {len(history_data)} punkter för {ticker}")
+            time.sleep(0.2)
 
-                print(f"Behandlat {t}: {len(df_t)} datapunkter")
+        except Exception as sub_e:
+            print(f"Kunde inte bearbeta sektor {ticker}: {sub_e}")
 
-            except Exception as sub_e:
-                print(f"Kunde inte bearbeta sektor {t}: {sub_e}")
-
-        # Skicka in allt i Supabase i batchar med upsert för att undvika dubbletter
-        if poster_att_spara:
-            batch_storlek = 500
-            for i in range(0, len(poster_att_spara), batch_storlek):
-                batch = poster_att_spara[i:i + batch_storlek]
-                supabase.table("sektor_historik").upsert(
-                    batch, on_conflict="datum,ticker"
-                ).execute()
-            
-            print(f"Sparade/uppdaterade totalt {len(poster_att_spara)} rader i 'sektor_historik'.")
-
-    except Exception as e:
-        print(f"Fel vid sektor-uppdatering: {e}")
+    # Skicka in allt i Supabase i batchar med upsert
+    if poster_att_spara:
+        batch_storlek = 500
+        for i in range(0, len(poster_att_spara), batch_storlek):
+            batch = poster_att_spara[i:i + batch_storlek]
+            supabase.table("sektor_historik").upsert(
+                batch, on_conflict="datum,ticker"
+            ).execute()
+        
+        print(f"Sparade/uppdaterade totalt {len(poster_att_spara)} rader i 'sektor_historik'.")
 
     print("--- Sektor-uppdatering klar ---")
 
 
-def kör_analys():
-    """Hämtar aktuella kurser och riktkurser, kollar avvikelser,
+def kör_eod_analys():
+    """Hämtar kurser, målkurser och rekar från EODHD och uppdaterar 'analyser_eod'."""
+    print("--- Startar EODHD aktieanalys & uppdatering ---")
 
-    hanterar saknade riktkurser, sätter tidsstämpel och uppdaterar Supabase.
-    """
-    print("--- Startar aktieanalys & uppdatering av kurser ---")
+    if not EODHD_API_KEY:
+        print("FEL: EODHD_API_KEY saknas i miljövariablerna.")
+        return
 
     try:
-        response = supabase.table("analyser").select("*").execute()
+        response = supabase.table("analyser_eod").select("*").execute()
         analyser = response.data
 
         if not analyser:
-            print("Inga aktier hittades i 'analyser'-tabellen.")
+            print("Inga aktier hittades i 'analyser_eod'-tabellen.")
             return
 
         nu_tid = datetime.now().isoformat()
@@ -108,76 +109,82 @@ def kör_analys():
             ticker = str(raw_ticker).strip().upper()
 
             try:
-                t_obj = yf.Ticker(ticker)
-                stock = t_obj.history(period="1d")
+                url = f"https://eodhd.com/api/fundamentals/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
+                response = requests.get(url)
 
-                if stock.empty:
-                    print(
-                        f"VARNING: Hittade ingen historik för {ticker}. Tar bort från databasen."
-                    )
-                    supabase.table("analyser").delete().eq("ticker", ticker).execute()
+                if response.status_code != 200:
+                    print(f"Kunde inte hämta data för {ticker} från EODHD. Statuskod: {response.status_code}")
                     continue
 
-                nuvarande_pris = float(stock["Close"].iloc[-1])
-                gammalt_pris = float(row.get("nuvarande", 0))
+                data = response.json()
+                if not data or "General" not in data:
+                    print(f"VARNING: Hittade ingen giltig data för {ticker} hos EODHD.")
+                    continue
 
-                # Sanity Check: Prisavvikelse på över 40%
+                general = data.get("General", {})
+                highlights = data.get("Highlights", {})
+                analyst_ratings = data.get("AnalystRatings", {})
+
+                nuvarande_pris = float(highlights.get("LatestPrice", 0) or 0)
+                
+                if nuvarande_pris <= 0:
+                    rt_url = f"https://eodhd.com/api/real-time/{ticker}?api_token={EODHD_API_KEY}&fmt=json"
+                    rt_res = requests.get(rt_url)
+                    if rt_res.status_code == 200:
+                        rt_data = rt_res.json()
+                        nuvarande_pris = float(rt_data.get("close", 0) or 0)
+
+                if nuvarande_pris <= 0:
+                    print(f"Hittade inget giltigt pris för {ticker}.")
+                    continue
+
+                gammalt_pris = float(row.get("nuvarande", 0) or 0)
+
+                # Sanity Check (40% spärren)
                 if gammalt_pris > 0:
-                    procentuell_forandring = (
-                        abs(nuvarande_pris - gammalt_pris) / gammalt_pris
-                    ) * 100
+                    procentuell_forandring = (abs(nuvarande_pris - gammalt_pris) / gammalt_pris) * 100
                     if procentuell_forandring > 40:
-                        print(
-                            f"STOPP: Extrem prisavvikelse för {ticker}! Gammalt: {gammalt_pris}, Nytt: {nuvarande_pris} ({procentuell_forandring:.1f}% förändring). Uppdatering blockerad."
-                        )
+                        print(f"STOPP: Extrem prisavvikelse för {ticker}! Gammalt: {gammalt_pris}, Nytt: {nuvarande_pris}. Blockerad.")
                         continue
 
-                # Hämta färsk riktkurs från yfinance info
-                try:
-                    info = t_obj.info
-                    ny_target = info.get("targetMeanPrice")
-                    if not ny_target or ny_target <= 0:
-                        target = float(row.get("target", 0))
-                    else:
-                        target = float(ny_target)
-                except Exception:
-                    target = float(row.get("target", 0))
+                target = float(analyst_ratings.get("TargetPrice", 0) or 0)
+                strong_buy = int(analyst_ratings.get("StrongBuy", 0) or 0)
+                buy = int(analyst_ratings.get("Buy", 0) or 0)
+                antal_koprek = strong_buy + buy
 
-                # Säkerhetskontroll för riktkurs & potential
+                namn = general.get("Name", row.get("name"))
+                sektor = general.get("Sector", row.get("sektor"))
+                valuta = general.get("Currency", row.get("valuta", "SEK"))
+
                 if target > 0 and nuvarande_pris > 0:
-                    potential = ((target - nuvarande_pris) / nuvarande_pris) * 100
-                    potential = round(potential, 2)
+                    potential = round(((target - nuvarande_pris) / nuvarande_pris) * 100, 2)
                 else:
                     target = 0.0
                     potential = 0.0
-                    print(
-                        f"OBS: Saknar giltig riktkurs för {ticker}. Sätter potential till 0."
-                    )
 
-                # Uppdatera i Supabase inklusive tidsstämpel
-                supabase.table("analyser").update({
+                supabase.table("analyser_eod").update({
                     "nuvarande": nuvarande_pris,
                     "target": target,
                     "potential": potential,
+                    "antal_koprek": antal_koprek,
+                    "name": namn,
+                    "sektor": sektor,
+                    "valuta": valuta,
                     "senast_uppdaterad": nu_tid,
                 }).eq("ticker", ticker).execute()
 
-                print(
-                    f"Uppdaterade {ticker}: Kurs {nuvarande_pris:.2f}, Riktkurs {target:.2f}, Potential {potential:.1f}%"
-                )
+                print(f"Uppdaterade {ticker}: Kurs {nuvarande_pris:.2f}, Riktkurs {target:.2f}, Potential {potential:.1f}%, Köprekar: {antal_koprek}")
+                time.sleep(0.3)
 
-                # Liten paus för att inte trigga rate limits hos Yahoo Finance
-                time.sleep(0.5)
-
-            except Exception as e:
-                print(f"Kunde inte uppdatera aktie {ticker}: {e}")
+            except Exception as sub_e:
+                print(f"Kunde inte bearbeta aktie {ticker}: {sub_e}")
 
     except Exception as e:
-        print(f"Fel vid hämtning från tabellen 'analyser': {e}")
+        print(f"Fel vid hämtning från tabellen 'analyser_eod': {e}")
 
-    print("--- Aktieanalys klar ---")
+    print("--- EODHD aktieanalys klar ---")
 
 
 if __name__ == "__main__":
-    uppdatera_sektor_historik()
-    kör_analys()
+    uppdatera_sektor_historik_eod()
+    kör_eod_analys()

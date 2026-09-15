@@ -1,0 +1,652 @@
+from datetime import datetime
+import os
+import pandas as pd
+import plotly.express as px
+from dotenv import load_dotenv
+from supabase import Client, create_client
+import streamlit as st
+import yfinance as yf
+
+# --- 0. Konfiguration & Supabase Anslutning ---
+load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+st.set_page_config(
+    page_title="Finestra Analytics",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# Dölj sidofältet helt och gör rubriker vita
+st.markdown(
+    """
+    <style>
+        [data-testid="stSidebarNav"] {display: none;}
+        section[data-testid="stSidebar"] {width: 0px !important; display: none;}
+        h1, h2, h3 {
+            color: #FFFFFF !important;
+        }
+    </style>
+""",
+    unsafe_allow_html=True,
+)
+
+# --- 1. Riktig Inloggningskontroll (Supabase Auth) ---
+if "user" not in st.session_state:
+    st.session_state["user"] = None
+
+# Kolla om det finns en aktiv session
+session = supabase.auth.get_session()
+if session:
+    st.session_state["user"] = session.user
+
+# Om användaren INTE är inloggad: Visa inloggning/registrering för betatestare
+if not st.session_state["user"]:
+    st.markdown(
+        "<h1 style='text-align: center;'>Finestra Analytics</h1>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<h3 style='text-align: center; color: gray;'>Betatest</h3>",
+        unsafe_allow_html=True,
+    )
+    st.write("")
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        tab_login, tab_signup = st.tabs(["Logga in", "Skapa betakonto"])
+
+        with tab_login:
+            email = st.text_input("E-post", key="login_email")
+            password = st.text_input("Lösenord", type="password", key="login_password")
+
+            if st.button("Logga in", width="stretch"):
+                try:
+                    res = supabase.auth.sign_in_with_password(
+                        {"email": email, "password": password}
+                    )
+                    st.session_state["user"] = res.user
+                    st.success("Inloggad!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Inloggning misslyckades: {e}")
+
+            # --- Glömt lösenord direkt på inloggningssidan ---
+            st.write("")
+            with st.expander("Glömt lösenord?"):
+                reset_email_input = st.text_input("E-post för återställning", key="login_reset_email")
+                if st.button("Skicka återställningslänk", key="btn_send_reset"):
+                    if reset_email_input:
+                        try:
+                            supabase.auth.reset_password_for_email(
+                                reset_email_input,
+                                options={"redirect_to": "https://finestra-analytics.streamlit.app"}
+                            )
+                            st.success("Om e-postadressen finns registrerad har instruktioner skickats till din inkorg.")
+                        except Exception as e:
+                            st.error(f"Kunde inte skicka länk: {e}")
+                    else:
+                        st.warning("Vänligen ange din e-postadress.")
+
+        with tab_signup:
+            st.write("Skapa ett konto för att delta i betatestet.")
+            new_email = st.text_input("E-post", key="signup_email")
+            new_password = st.text_input(
+                "Välj lösenord", type="password", key="signup_password"
+            )
+
+            if st.button("Registrera konto", width="stretch"):
+                try:
+                    supabase.auth.sign_up({"email": new_email, "password": new_password})
+                    st.success("Konto skapat! Du kan nu logga in.")
+                except Exception as e:
+                    st.error(f"Kunde inte registrera: {e}")
+
+    # Stoppar resten av appen från att visas för oinloggade
+    st.stop()
+
+# --- 2. Initiera session_state för nivåer (när man är inloggad) ---
+if "user_tier" not in st.session_state:
+  st.session_state["user_tier"] = "insight"
+
+# Definiera rättigheter
+TIER_FEATURES = {
+    "insight": ["top4_dashboard"],
+    "advance": [
+        "top4_dashboard",
+        "full_dashboard",
+        "sector_selection",
+        "sector_rotation",
+        "deep_analysis",
+    ],
+    "master": [
+        "top4_dashboard",
+        "full_dashboard",
+        "sector_selection",
+        "sector_rotation",
+        "deep_analysis",
+        "premium_blog",
+    ],
+}
+
+
+def has_access(user_tier, feature):
+  return feature in TIER_FEATURES.get(user_tier, ["top4_dashboard"])
+
+
+@st.cache_data(ttl=600)
+def hämta_data():
+  try:
+    response = supabase.table("analyser").select("*").execute()
+    return pd.DataFrame(response.data)
+  except:
+    return pd.DataFrame()
+
+
+# Mappning för svenska sektornamn
+sektor_namn_sv = {
+    "Technology": "Teknologi",
+    "Financial Services": "Finans",
+    "Healthcare": "Hälsovård",
+    "Consumer Cyclical": "Konsument (Sällanköp)",
+    "Consumer Defensive": "Konsument (Bas)",
+    "Industrials": "Industri",
+    "Energy": "Energi",
+    "Utilities": "Kraftförsörjning",
+    "Basic Materials": "Material",
+    "Real Estate": "Fastigheter",
+    "Communication Services": "Kommunikation",
+}
+
+# --- Hjälpfunktion för dynamisk valutaformatering ---
+def formatera_pris(pris_varde, valuta_kod):
+  valuta_symboler = {
+      "USD": "$",
+      "SEK": " kr",
+      "NOK": " kr",
+      "DKK": " DKK",
+      "EUR": "€",
+      "GBP": "£",
+  }
+  sym = valuta_symboler.get(str(valuta_kod).upper(), "$")
+  pris_str = f"{float(pris_varde):.2f}"
+  
+  # Placera symbolen snyggt beroende på valuta
+  if sym in ["$", "€", "£"]:
+    return f"{sym}{pris_str}"
+  else:
+    return f"{pris_str}{sym}"
+
+# --- 3. UI Layout ---
+header_col1, header_col2 = st.columns([0.6, 0.4])
+
+with header_col1:
+  st.markdown(
+      "<h1 style='color: black; margin-bottom: 0;'>Finestra Analytics</h1>",
+      unsafe_allow_html=True,
+  )
+
+with header_col2:
+  user_email = st.session_state["user"].email
+  st.markdown(
+      f"""
+        <div style='display: flex; justify-content: flex-end; align-items: center; gap: 15px; padding-top: 15px;'>
+            <span style='color: #555; font-size: 14px;'>Inloggad: <b>{user_email}</b></span>
+        </div>
+    """,
+      unsafe_allow_html=True,
+  )
+
+  col_knapp1, col_knapp2 = st.columns([2, 1])
+  with col_knapp2:
+    if st.button("Logga ut", key="logout_btn"):
+      supabase.auth.sign_out()
+      st.session_state["user"] = None
+      st.rerun()
+
+st.divider()
+
+tabs = st.tabs(
+    ["DASHBOARD", "MARKET RESEARCH", "PRICING", "FAQ", "KONTO", "INSTÄLLNINGAR"]
+)
+
+# --- DASHBOARD ---
+with tabs[0]:
+  df = hämta_data()
+
+  if not df.empty and "senast_uppdaterad" in df.columns:
+    try:
+      senaste_str = df["senast_uppdaterad"].dropna().max()
+      if pd.notna(senaste_str):
+        dt = datetime.fromisoformat(str(senaste_str).replace("Z", ""))
+        senast_kopierad = dt.strftime("%Y-%m-%d %H:%M")
+      else:
+        senast_kopierad = "Okänd"
+    except Exception:
+      senast_kopierad = "Okänd"
+  else:
+    senast_kopierad = "Okänd"
+
+  col_titel, col_tid = st.columns([3, 1])
+  with col_titel:
+    st.subheader("Marknadsläge")
+  with col_tid:
+    st.markdown(
+        f"<p style='text-align: right; color: gray; font-size: 13px; margin-top:"
+        f" 10px;'>Senast uppdaterad: <b>{senast_kopierad}</b></p>",
+        unsafe_allow_html=True,
+    )
+
+  if not df.empty:
+    df["potential"] = pd.to_numeric(
+        df["potential"], errors="coerce"
+    ).fillna(0)
+    df["nuvarande"] = pd.to_numeric(
+        df["nuvarande"], errors="coerce"
+    ).fillna(0)
+    df["target"] = pd.to_numeric(df["target"], errors="coerce").fillna(0)
+    df["antal_koprek"] = pd.to_numeric(
+        df["antal_koprek"], errors="coerce"
+    ).fillna(0)
+
+    # Om valuta-kolumn saknas i tabellen tillfälligt, sätt USD som standard
+    if "valuta" not in df.columns:
+      df["valuta"] = "USD"
+
+    max_pot = df["potential"].max()
+    norm_pot = (
+        df["potential"] / (max_pot if max_pot > 0 else 1)
+    ) * 60
+    max_rek = df["antal_koprek"].max()
+    norm_rek = (
+        df["antal_koprek"] / (max_rek if max_rek > 0 else 1)
+    ) * 40
+    df["Finestra Score"] = (norm_pot + norm_rek).round(0)
+
+    df["sektor_sv"] = df["sektor"].map(sektor_namn_sv).fillna(df["sektor"])
+
+    # Applicera dynamisk valutaformatering
+    df["Kurs"] = [formatera_pris(row["nuvarande"], row["valuta"]) for _, row in df.iterrows()]
+    df["Riktkurs"] = [formatera_pris(row["target"], row["valuta"]) for _, row in df.iterrows()]
+    df["Potential (%)"] = df["potential"].round(1).astype(str) + " %"
+
+    display_df = df.rename(
+        columns={
+            "ticker": "Ticker",
+            "name": "Namn",
+            "sektor_sv": "Sektor",
+            "antal_koprek": "Köprekar",
+        }
+    )
+
+    if has_access(st.session_state["user_tier"], "sector_selection"):
+      unika_sektorer = sorted(
+          [s for s in df["sektor_sv"].unique() if s and s != "N/A"]
+      )
+      sektorer = ["Visa Alla (Topp 4)"] + unika_sektorer
+      vald_sektor = st.selectbox("Välj sektor:", sektorer)
+
+      if vald_sektor == "Visa Alla (Topp 4)":
+        visnings_df = (
+            display_df.sort_values(by="Finestra Score", ascending=False)
+            .head(4)
+        )
+      else:
+        visnings_df = display_df[
+            display_df["Sektor"] == vald_sektor
+        ].sort_values(by="Finestra Score", ascending=False)
+    else:
+      st.info("Visar Topp 4 (Insight). Uppgradera till Advance för sektorval!")
+      visnings_df = (
+          display_df.sort_values(by="Finestra Score", ascending=False).head(4)
+      )
+
+    st.dataframe(
+        visnings_df[[
+            "Ticker",
+            "Namn",
+            "Finestra Score",
+            "Kurs",
+            "Riktkurs",
+            "Potential (%)",
+            "Köprekar",
+        ]],
+        width=1000,
+        hide_index=True,
+    )
+
+# --- MARKET RESEARCH ---
+with tabs[1]:
+    st.subheader("Market Research")
+    st.write("### Sektorrotation (Historisk Utveckling)")
+
+    # --- Aptitretare / Förklarande text för alla besökare (Insight och uppåt) ---
+    st.markdown(
+        "Här kan du följa hur olika branscher (sektorer) presterar i förhållande "
+        "till varandra över tid. Ett kraftfullt verktyg för att förstå vart kapitalet "
+        "flödar på marknaden."
+    )
+
+    with st.expander("Vad är sektorrotation och hur använder du det?"):
+        st.markdown("""
+        **Sektorrotation** handlar om hur kapital flyttas mellan olika branscher beroende på var vi befinner oss i konjunkturcykeln. 
+
+        * **Varför ska du titta på detta?** Olika sektorer gynnas i olika marknadslägen. Till exempel brukar *cykliska sektorer* gå starkt i en växande ekonomi, medan *defensiva sektorer* brukar stå emot bättre i tider av osäkerhet.
+        * **Så kan du använda verktyget:**
+          1. **Välj tidsperiod** (från 1 vecka upp till 5 år) för att se både kortsiktiga trender och långsiktiga makrorörelser.
+          2. **Identifiera ledarna:** Vilka branscher drar till sig mest kapital just nu?
+          3. **Anpassa din portfölj:** Använd insikterna för att balansera dina innehav mot de sektorer som visar starkast momentum.
+        """)
+    
+    st.write("") # Lite luft
+
+    # --- Låst verktyg för Advance och Master ---
+    if has_access(st.session_state["user_tier"], "sector_rotation"):
+        tidsintervall = st.pills(
+            "Välj tidsperiod:",
+            ["1 vecka", "1 månad", "1 år", "3 år", "5 år"],
+            default="1 år",
+            label_visibility="collapsed",
+            key="sektor_tidsintervall"
+        )
+
+        sektor_namn = {
+            "XLK": "Teknologi",
+            "XLF": "Finans",
+            "XLV": "Hälsovård",
+            "XLY": "Konsument (Sällanköp)",
+            "XLP": "Konsument (Bas)",
+            "XLI": "Industri",
+            "XLE": "Energi",
+            "XLU": "Kraftförsörjning",
+            "XLB": "Material",
+            "XLRE": "Fastigheter",
+        }
+
+        intervall_mapping = {
+            "1 vecka": ("5d", "1d"),
+            "1 månad": ("1mo", "1d"),
+            "1 år": ("1y", "1d"),
+            "3 år": ("3y", "1d"),
+            "5 år": ("5y", "1d"),
+        }
+
+        period_str, interval_str = intervall_mapping[tidsintervall]
+
+        # Cache-funktion placerad rent på modulsynlighet / funktionell nivå
+        @st.cache_data(ttl=3600)
+        def hamta_live_sektor_historik(period, interval):
+            tickers = list(sektor_namn.keys())
+            try:
+                df_all = yf.download(
+                    tickers, period=period, interval=interval, progress=False, group_by="ticker"
+                )
+                
+                if df_all.empty:
+                    return pd.DataFrame(), "Tom dataframe från Yahoo Finance"
+
+                data_list = []
+                for ticker in tickers:
+                    try:
+                        if len(tickers) == 1:
+                            df_t = df_all.copy()
+                        else:
+                            df_t = df_all[ticker].copy()
+
+                        df_t = df_t.dropna(subset=["Close"])
+                        if not df_t.empty:
+                            df_t = df_t[["Close"]].reset_index()
+                            df_t.columns = ["datum", "pris"]
+                            df_t["ticker"] = ticker
+                            df_t["sektor_namn"] = f"{sektor_namn[ticker]} ({ticker})"
+
+                            start_pris = df_t["pris"].iloc[0]
+                            df_t["förändring"] = (
+                                (df_t["pris"] - start_pris) / start_pris
+                            ) * 100
+
+                            data_list.append(df_t)
+                    except Exception as sub_e:
+                        print(f"Kunde inte bearbeta {ticker}: {sub_e}")
+
+                if data_list:
+                    return pd.concat(data_list, ignore_index=True), None
+                return pd.DataFrame(), "Inga giltiga datapunkter kunde extraheras"
+                
+            except Exception as e:
+                return pd.DataFrame(), str(e)
+
+        df_sektor, fel_meddelande = hamta_live_sektor_historik(period_str, interval_str)
+
+        if not df_sektor.empty:
+            fig = px.line(
+                df_sektor,
+                x="datum",
+                y="förändring",
+                color="sektor_namn",
+                labels={
+                    "förändring": "Avkastning (%)",
+                    "datum": "Datum",
+                    "sektor_namn": "Sektor",
+                },
+                template="plotly_dark",
+            )
+
+            fig.update_layout(
+                hovermode="x unified",
+                yaxis_ticksuffix=" %",
+                xaxis_title="",
+                yaxis_title="Avkastning (%)",
+                plot_bgcolor="#0A1118",
+                paper_bgcolor="#0A1118",
+                font=dict(color="#FFFFFF"),
+            )
+            fig.update_xaxes(tickformat="%Y-%m-%d")
+
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                f"Grafen visar procentuell utveckling över vald period ({tidsintervall}). Datan är baserad på amerikanska SPDR Sector ETFs."
+            )
+
+            st.write(f"#### Aktuell status ({tidsintervall})")
+            senaste_per_ticker = (
+                df_sektor.groupby("ticker")["datum"].max().reset_index()
+            )
+            df_senaste = pd.merge(senaste_per_ticker, df_sektor, on=["ticker", "datum"])
+            df_senaste = df_senaste[["sektor_namn", "förändring"]].sort_values(
+                by="förändring", ascending=False
+            )
+            df_senaste["förändring"] = (
+                df_senaste["förändring"].round(2).astype(str) + " %"
+            )
+            df_senaste = df_senaste.rename(
+                columns={"sektor_namn": "Sektor", "förändring": "Utveckling"}
+            )
+
+            st.dataframe(df_senaste, hide_index=True)
+        else:
+            st.warning(f"Kunde inte ladda sektordata just nu. Orsak: {fel_meddelande}")
+    else:
+        st.info("🔒 Uppgradera till **Advance** eller **Master** för att låsa upp den interaktiva sektorgrafen och tidsväljaren.")
+
+    st.divider()
+    st.write("### Djupgående analyser")
+    if has_access(st.session_state["user_tier"], "deep_analysis"):
+        st.info("Här visas exklusiv marknadsanalys för medlemmar.")
+    else:
+        st.warning("🔒 Djupanalyser kräver Finestra Advance.")
+
+# --- PRICING ---
+with tabs[2]:
+    st.markdown(
+        "<h2 style='text-align: center;'>Välj din nivå</h2>", unsafe_allow_html=True
+    )
+    st.write("")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        # Osynlig "utfyllnad" för att matcha badgen på Master-kolumnen
+        st.markdown("<div style='height: 29px; margin-bottom: 8px;'></div>", unsafe_allow_html=True)
+        
+        st.markdown("""
+            ### Insight
+            *Håll koll på marknadens topp-aktier.*
+            * **De 4 aktierna med högst Finestra score**
+            * Visar nuvarande pris, genomsnittligt målpris, % uppsida samt antal köprekar
+            * **Månadsbrev:** Nyheter och smakprov på våra analyser direkt i din inkorg.
+            
+            **Pris: 0 kr/mån**
+            """)
+        if st.button("Välj Insight"):
+            st.session_state["user_tier"] = "insight"
+            st.rerun()
+
+    with col2:
+        # Osynlig "utfyllnad" här med
+        st.markdown("<div style='height: 29px; margin-bottom: 8px;'></div>", unsafe_allow_html=True)
+        
+        st.markdown("""
+            ### Advance
+            *För den seriösa aktieinvesteraren.*
+            * **Allt i Insight**
+            * **Full tillgång till alla aktier & sektorer**
+            * **Marknads- och investeringsskola:** Vad påverkar aktierna? Vad är P/E?
+            
+            **Pris: 79 kr/mån**
+            """)
+        if st.button("Välj Advance"):
+            st.session_state["user_tier"] = "advance"
+            st.rerun()
+
+    with col3:
+        # Visuell badge för att dra blicken till Master
+        st.markdown(
+            """
+            <div style="background-color: #ff4b4b; color: white; padding: 4px 8px; border-radius: 4px; text-align: center; font-weight: bold; font-size: 13px; margin-bottom: 8px;">
+                ⭐ MEST POPULÄR / BÄST VÄRDE
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        
+        st.markdown("""
+            ### Master
+            *För dig som vill ha expertnivå.*
+            * **Allt i Advance**
+            * **Djupanalyser av utvalda aktier (på webben)**
+            * **Avancerade marknadsanalyser:** Guld, silver, olja, krypto & råvaror.
+            * **Exklusiva månadsrapporter:** Djupdykningar & nulägesanalyser.
+            
+            **Pris: 99 kr/mån**
+            """)
+        
+        st.caption("✨ Endast +20 kr/mån jämfört med Advance – få tillgång till råvaror & krypto direkt.")
+
+        if st.button("Välj Master"):
+            st.session_state["user_tier"] = "master"
+            st.rerun()
+
+# --- FAQ ---
+with tabs[3]:
+    st.markdown(
+        "<h2 style='text-align: center;'>Vanliga frågor och svar</h2>",
+        unsafe_allow_html=True,
+    )
+    st.write("")
+
+    with st.expander("Vad är Finestra Analytics?"):
+        st.write(
+            "Finestra Analytics är en digital plattform som kombinerar datadrivna"
+            " aktieanalyser, sektorrotation och djupgående marknadsutbildning för"
+            " att hjälpa dig göra bättre investeringsbeslut."
+        )
+
+    with st.expander("Vad är Finestra score?"):
+        st.write(
+            "Finestra score är vårt egna sammanvägda betyg som rankar aktier"
+            " baserat på flera olika kvantitativa parametrar. Det hjälper dig att"
+            " snabbt sålla ut vilka bolag som presterar starkast enligt vår modell."
+        )
+
+    with st.expander("Fungerar verkligen Finestra Score?"):
+        st.write("""
+        Vi använder modellen själva i våra egna investeringar, och vi delar med oss av resultat och utveckling i vårt månadsbrev (som ingår gratis i Insight). 
+        
+        Historisk avkastning är naturligtvis ingen garanti för framtida resultat, och exakt tidshorisont kan variera. Syftet med Finestra Score och våra analysverktyg är att ge dig ett strukturerat ramverk som ökar dina odds och din sannolikhet att göra lönsamma investeringar över tid.
+        """)
+
+    with st.expander(
+        "Vad är skillnaden mellan Insight, Advance och Master?"
+    ):
+        st.write("""
+        - **Insight (0 kr/mån):** Ger dig de 4 aktierna med högst Finestra score (inkl. nuvarande pris, målpris och uppsida) samt vårt månadsbrev.
+        - **Advance (79 kr/mån):** Allt i Insight, plus full tillgång till alla aktier och sektorer samt vår marknads- och investeringsskola där vi förklarar nyckeltal som P/E och vad som driver marknaden.
+        - **Master (99 kr/mån):** Allt i Advance, plus våra exklusiva djupanalyser av utvalda aktier, avancerade analyser av råvaror/krypto och våra månatliga fördjupningsrapporter – allt samlat direkt på hemsidan.
+        """)
+
+    with st.expander("Hur ofta uppdateras innehållet?"):
+        st.write(
+            "Topplistan och marknadsdata uppdateras löpande. Vårt"
+            " utbildningsmaterial och våra djupanalyser/rapporter uppdateras"
+            " regelbundet för att säkerställa högsta kvalitet."
+        )
+
+    with st.expander("Kan jag säga upp min prenumeration när som helst?"):
+        st.write(
+            "Ja, absolut. Det är ingen bindningstid, du avslutar enkelt din"
+            " prenumeration direkt via ditt konto när du vill."
+        )
+
+    with st.expander("Ger ni personliga finansiella råd?"):
+        st.write(
+            "Nej. Finestra Analytics tillhandahåller analysverktyg, marknadsdata"
+            " och utbildning. Alla investeringar sker på eget ansvar."
+        )
+
+# --- KONTO ---
+with tabs[4]:
+    st.subheader("Konto - Simulator & Information")
+
+    def ändra_nivå():
+        st.session_state["user_tier"] = st.session_state["vald_nivå"]
+
+    st.selectbox(
+        "Simulera användarnivå (för test):",
+        ["insight", "advance", "master"],
+        key="vald_nivå",
+        on_change=ändra_nivå,
+        index=["insight", "advance", "master"].index(
+            st.session_state.get("user_tier", "insight")
+        ),
+    )
+    st.write(f"Aktiv nivå i simulatorn: **{st.session_state['user_tier']}**")
+
+    st.divider()
+
+    st.subheader("Säkerhet")
+    with st.expander("Glömt eller vill du återställa ditt lösenord?"):
+        st.write("Ange din e-postadress så skickar vi en länk för att återställa ditt lösenord.")
+        
+        with st.form("forgot_password_form"):
+            reset_email = st.text_input("E-postadress", key="forgot_email_input")
+            submit_reset = st.form_submit_button("Skicka återställningslänk")
+            
+            if submit_reset:
+                if reset_email:
+                    try:
+                        response = supabase.auth.reset_password_for_email(
+                            reset_email,
+                            options={"redirect_to": "https://din-app-url.streamlit.app"} # Byt ut mot din publika Streamlit-URL vid behov
+                        )
+                        st.success("Om e-postadressen finns registrerad har instruktioner skickats till din inkorg.")
+                    except Exception as e:
+                        st.error(f"Kunde inte skicka återställningslänk: {e}")
+                else:
+                    st.warning("Vänligen ange en giltig e-postadress.")
+# --- INSTÄLLNINGAR ---
+with tabs[5]:
+    st.subheader("Inställningar")
+    st.write("Här kan du hantera dina kontoinställningar framöver.")
