@@ -5,103 +5,152 @@ from dotenv import load_dotenv
 from supabase import create_client
 import requests
 import yfinance as yf
+import pandas as pd
 
+# Ladda miljövariabler (.env)
 load_dotenv()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 
-def kör_us500_test():
-    print("--- Startar analys med Yahoo Finance (Pris) + EODHD (Fundamenta) ---")
+def hämta_us500_tickers():
+    """Hämtar den aktuella listan på alla S&P 500-bolag."""
+    print("-> Hämtar US500 (S&P 500) aktielista...")
+    try:
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        tables = pd.read_html(url)
+        df = tables[0]
+        tickers = df['Symbol'].tolist()
+        print(f"-> Hittade {len(tickers)} bolag i S&P 500.")
+        return tickers
+    except Exception as e:
+        print(f"FEL vid hämtning av S&P 500-lista: {e}")
+        # Reservlista om Wikipedia-hämtning mot förmodan skulle misslyckas
+        return ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "BRK.B", "JNJ", "V"]
 
-    # US-tickers (utan .US-suffix för Yahoo, vi lägger till .US för EODHD om det behövs)
-    test_tickers = [
-        {"yahoo": "AAPL", "eodhd": "AAPL.US"},
-        {"yahoo": "MSFT", "eodhd": "MSFT.US"},
-        {"yahoo": "NVDA", "eodhd": "NVDA.US"},
-        {"yahoo": "GOOGL", "eodhd": "GOOGL.US"},
-        {"yahoo": "AMZN", "eodhd": "AMZN.US"},
-    ]
-    
+def kör_us500_pipeline():
+    print("=== Startar Finestra Analytics US500 Pipeline ===")
+    start_tid = time.time()
+
+    if not EODHD_API_KEY:
+        print("FEL: EODHD_API_KEY saknas i miljövariablerna.")
+        return
+
+    raw_tickers = hämta_us500_tickers()
     nu_tid = datetime.now().isoformat()
-    sparade = 0
 
-    for t_info in test_tickers:
-        yahoo_symbol = t_info["yahoo"]
-        eod_symbol = t_info["eodhd"]
-        print(f"\nUndersöker ticker: {eod_symbol}")
+    batch_buffer = []
+    totalt_sparade = 0
+    BATCH_SIZE = 50
+
+    for i, symbol in enumerate(raw_tickers, 1):
+        # Formatkonvertering (t.ex. BRK.B -> BRK-B för Yahoo, BRK-B.US för EODHD)
+        clean_symbol = symbol.replace(".", "-")
+        yahoo_symbol = clean_symbol
+        eod_symbol = f"{clean_symbol}.US"
 
         try:
-            # 1. Hämta SENASTE PRIS från Yahoo Finance (Gratis, stabilt, inga 403)
+            # 1. Hämta exakt ojusterad slutkurs via Yahoo Finance fast_info
             ticker_yf = yf.Ticker(yahoo_symbol)
-            hist = ticker_yf.history(period="1d")
-            
             nuvarande_pris = 0.0
-            if not hist.empty:
-                nuvarande_pris = float(hist["Close"].iloc[-1])
 
-            print(f"  - Yahoo Finance Pris: {nuvarande_pris:.2f} USD")
+            try:
+                fast_info = ticker_yf.fast_info
+                nuvarande_pris = float(fast_info.get("lastPrice", 0) or fast_info.get("previousClose", 0) or 0)
+            except Exception:
+                pass
+
+            # Fallback till history om fast_info var tom
+            if nuvarande_pris <= 0:
+                try:
+                    hist = ticker_yf.history(period="1d", auto_adjust=False)
+                    if not hist.empty:
+                        nuvarande_pris = float(hist["Close"].iloc[-1])
+                except Exception:
+                    pass
 
             if nuvarande_pris <= 0:
-                print("  -> Hoppar över: Kunde inte hämta giltigt pris från Yahoo Finance")
+                print(f"[{i}/{len(raw_tickers)}] Hoppar över {eod_symbol}: Inget giltigt pris från Yahoo Finance.")
                 continue
 
-            # 2. Hämta TARGET PRICE och Analytikerdata från EODHD Fundamentals
+            # 2. Hämta Fundamenta & Target Price från EODHD
             namn = yahoo_symbol
             sektor = "Okänd"
             valuta = "USD"
             target = 0.0
             antal_koprek = 0
 
-            if EODHD_API_KEY:
-                url_fund = f"https://eodhd.com/api/fundamentals/{eod_symbol}?api_token={EODHD_API_KEY}&fmt=json"
-                res_fund = requests.get(url_fund)
-                
-                if res_fund.status_code == 200:
-                    fund_data = res_fund.json()
-                    if fund_data and "General" in fund_data:
-                        general = fund_data.get("General", {})
-                        analyst_ratings = fund_data.get("AnalystRatings", {})
+            url_fund = f"https://eodhd.com/api/fundamentals/{eod_symbol}?api_token={EODHD_API_KEY}&fmt=json"
+            res_fund = requests.get(url_fund)
 
-                        namn = general.get("Name", yahoo_symbol)
-                        sektor = general.get("Sector", "Okänd")
-                        valuta = general.get("Currency", "USD")
-                        target = float(analyst_ratings.get("TargetPrice", 0) or 0)
-                        
-                        strong_buy = int(analyst_ratings.get("StrongBuy", 0) or 0)
-                        buy = int(analyst_ratings.get("Buy", 0) or 0)
-                        antal_koprek = strong_buy + buy
+            if res_fund.status_code == 200:
+                fund_data = res_fund.json()
+                if fund_data and "General" in fund_data:
+                    general = fund_data.get("General", {})
+                    analyst_ratings = fund_data.get("AnalystRatings", {})
 
-            # Fallback på Target Price från Yahoo om EODHD saknas/är 0
-            if target == 0.0:
-                yf_info = ticker_yf.info
-                target = float(yf_info.get("targetMeanPrice", 0) or 0)
-                if namn == yahoo_symbol:
-                    namn = yf_info.get("shortName", yahoo_symbol)
-                    sektor = yf_info.get("sector", "Okänd")
+                    namn = general.get("Name", yahoo_symbol)
+                    sektor = general.get("Sector", "Okänd")
+                    valuta = general.get("Currency", "USD")
+                    target = float(analyst_ratings.get("TargetPrice", 0) or 0)
+
+                    strong_buy = int(analyst_ratings.get("StrongBuy", 0) or 0)
+                    buy = int(analyst_ratings.get("Buy", 0) or 0)
+                    antal_koprek = strong_buy + buy
+
+            # Fallback till Yahoo Info om EODHD saknade riktkurs/namn
+            if target == 0.0 or namn == yahoo_symbol:
+                try:
+                    yf_info = ticker_yf.info
+                    if target == 0.0:
+                        target = float(yf_info.get("targetMeanPrice", 0) or 0)
+                    if namn == yahoo_symbol:
+                        namn = yf_info.get("shortName", yahoo_symbol)
+                        sektor = yf_info.get("sector", sektor)
+                except Exception:
+                    pass
 
             potential = round(((target - nuvarande_pris) / nuvarande_pris) * 100, 2) if (target > 0 and nuvarande_pris > 0) else 0.0
 
-            print(f"  -> Sparar till Supabase: {eod_symbol} ({namn}) | Pris: {nuvarande_pris:.2f} | Target: {target:.2f} | Potential: {potential}%")
-            
-            supabase.table("analyser_eod").upsert({
+            # Lägg till i batch
+            batch_buffer.append({
                 "ticker": eod_symbol,
-                "nuvarande": nuvarande_pris,
-                "target": target,
+                "nuvarande": round(nuvarande_pris, 2),
+                "target": round(target, 2),
                 "potential": potential,
                 "antal_koprek": antal_koprek,
                 "name": namn,
                 "sektor": sektor,
                 "valuta": valuta,
                 "senast_uppdaterad": nu_tid,
-            }, on_conflict="ticker").execute()
+            })
 
-            sparade += 1
-            time.sleep(0.2)
+            print(f"[{i}/{len(raw_tickers)}] {eod_symbol} ({namn}) | Pris: {nuvarande_pris:.2f} | Target: {target:.2f} | Potential: {potential}%")
 
-        except Exception as sub_e:
-            print(f"  -> FEL vid bearbetning av {eod_symbol}: {sub_e}")
+            # Sänd till Supabase i grupper om 50 (Batching)
+            if len(batch_buffer) >= BATCH_SIZE:
+                supabase.table("analyser_eod").upsert(batch_buffer, on_conflict="ticker").execute()
+                totalt_sparade += len(batch_buffer)
+                print(f"---> [SUPABASE] Sparade batch om {len(batch_buffer)} bolag! (Totalt sparade: {totalt_sparade})")
+                batch_buffer = []
 
-    print(f"\n--- Test klart! Sparade rader: {sparade} ---")
+            # Liten paus för att undvika överbelastning
+            time.sleep(0.05)
+
+        except Exception as e:
+            print(f"[{i}/{len(raw_tickers)}] FEL vid bearbetning av {eod_symbol}: {e}")
+
+    # Sänd sista slatt-batchen om det finns kvar i bufferten
+    if batch_buffer:
+        supabase.table("analyser_eod").upsert(batch_buffer, on_conflict="ticker").execute()
+        totalt_sparade += len(batch_buffer)
+        print(f"---> [SUPABASE] Sparade sista batch om {len(batch_buffer)} bolag!")
+
+    tidsatgang = round(time.time() - start_tid, 1)
+    print(f"\n==========================================")
+    print(f"   US500 KÖRNING KLAR!")
+    print(f"   Totalt uppdaterade bolag i Supabase: {totalt_sparade}")
+    print(f"   Tidsatgång: {tidsatgang} sekunder")
+    print(f"==========================================")
 
 if __name__ == "__main__":
-    kör_us500_test()
+    kör_us500_pipeline()
